@@ -1,0 +1,8 @@
+[package]
+name = "recloser"
+version = "0.1.0"
+authors = ["lerouxrgd <leroux.rgd@gmail.com>"]
+edition = "2018"
+repository = "https://github.com/lerouxrgd/recloser"
+license = "MIT"
+readme = "README.md"
