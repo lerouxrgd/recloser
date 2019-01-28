@@ -1,4 +1,5 @@
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::Arc;
 
 enum RecloserState {
     Open(RingBitSet),
@@ -15,12 +16,13 @@ impl RecloserState {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct RingBitSet {
+    spinlock: Arc<AtomicBool>,
     len: usize,
-    card: AtomicUsize,
-    ring: Box<[AtomicBool]>,
-    index: AtomicUsize,
+    card: Arc<AtomicUsize>,
+    ring: Arc<Box<[AtomicBool]>>,
+    index: Arc<AtomicUsize>,
 }
 
 impl RingBitSet {
@@ -32,58 +34,72 @@ impl RingBitSet {
         }
 
         Self {
+            spinlock: Arc::new(AtomicBool::new(false)),
             len: len,
-            card: AtomicUsize::new(0),
-            ring: buf.into_boxed_slice(),
-            index: AtomicUsize::new(0),
+            card: Arc::new(AtomicUsize::new(0)),
+            ring: Arc::new(buf.into_boxed_slice()),
+            index: Arc::new(AtomicUsize::new(0)),
         }
     }
 
     pub fn set_current(&mut self, val_new: bool) -> bool {
-        loop {
-            let i = self.index.load(Ordering::Acquire);
-            let j = if i == self.len - 1 { 0 } else { i + 1 };
+        while self
+            .spinlock
+            .compare_and_swap(false, true, Ordering::Acquire)
+        {}
 
-            let val_old = self.ring[i].load(Ordering::Acquire);
+        let i = self.index.load(Ordering::SeqCst);
+        let j = if i == self.len - 1 { 0 } else { i + 1 };
 
-            let card_old = self.card.load(Ordering::Acquire);
-            let card_new = card_old - to_int(val_old) + to_int(val_new);
+        let val_old = self.ring[i].load(Ordering::SeqCst);
 
-            if self.index.compare_and_swap(i, j, Ordering::Release) == i
-                && self.ring[i].compare_and_swap(val_old, val_new, Ordering::Release) == val_old
-                && self
-                    .card
-                    .compare_and_swap(card_old, card_new, Ordering::Release)
-                    == card_old
-            {
-                return val_old;
-            }
-        }
+        let card_old = self.card.load(Ordering::SeqCst);
+        let card_new = card_old - to_int(val_old) + to_int(val_new);
+
+        self.ring[i].store(val_new, Ordering::SeqCst);
+        self.index.store(j, Ordering::SeqCst);
+        self.card.store(card_new, Ordering::SeqCst);
+
+        self.spinlock.store(false, Ordering::Release);
+        return val_old;
     }
 }
 
 fn to_int(b: bool) -> usize {
-    if b {
-        1
-    } else {
-        0
+    match b {
+        true => 1,
+        false => 0,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::thread;
 
     #[test]
     fn it_works() {
         let mut rbs = RingBitSet::new(5);
-        rbs.set_current(true);
-        rbs.set_current(true);
-        rbs.set_current(true);
-        rbs.set_current(true);
+
+        let mut rbs_ref = rbs.clone();
+        let t = thread::spawn(move || {
+            rbs_ref.set_current(true);
+            rbs_ref.set_current(true);
+            rbs_ref.set_current(false);
+            rbs_ref.set_current(false);
+        });
+
         rbs.set_current(true);
         rbs.set_current(false);
-        println!("--> {:?}", rbs);
-        assert_eq!(2 + 2, 4);
+
+        t.join().expect("join failed");
+        assert_eq!(
+            rbs.card.load(Ordering::SeqCst),
+            rbs.ring
+                .iter()
+                .map(|b| to_int(b.load(Ordering::SeqCst)))
+                .fold(0, |acc, i| acc + i)
+        );
+        assert_eq!(6 % 5, rbs.index.load(Ordering::SeqCst));
     }
 }
