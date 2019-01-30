@@ -1,5 +1,4 @@
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::Arc;
 
 enum RecloserState {
     Open(RingBitSet),
@@ -16,13 +15,13 @@ impl RecloserState {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct RingBitSet {
-    spinlock: Arc<AtomicBool>,
+    spinlock: AtomicBool,
     len: usize,
-    card: Arc<AtomicUsize>,
-    ring: Arc<Box<[AtomicBool]>>,
-    index: Arc<AtomicUsize>,
+    card: AtomicUsize,
+    ring: Box<[AtomicBool]>,
+    index: AtomicUsize,
 }
 
 impl RingBitSet {
@@ -34,15 +33,15 @@ impl RingBitSet {
         }
 
         Self {
-            spinlock: Arc::new(AtomicBool::new(false)),
+            spinlock: AtomicBool::new(false),
             len: len,
-            card: Arc::new(AtomicUsize::new(0)),
-            ring: Arc::new(buf.into_boxed_slice()),
-            index: Arc::new(AtomicUsize::new(0)),
+            card: AtomicUsize::new(0),
+            ring: buf.into_boxed_slice(),
+            index: AtomicUsize::new(0),
         }
     }
 
-    pub fn set_current(&mut self, val_new: bool) -> bool {
+    pub fn set_current(&self, val_new: bool) -> bool {
         while self
             .spinlock
             .compare_and_swap(false, true, Ordering::Acquire)
@@ -75,24 +74,33 @@ fn to_int(b: bool) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Barrier};
     use std::thread;
 
     #[test]
     fn it_works() {
-        let mut rbs = RingBitSet::new(5);
+        let rbs = Arc::new(RingBitSet::new(7));
 
-        let mut rbs_ref = rbs.clone();
-        let t = thread::spawn(move || {
-            rbs_ref.set_current(true);
-            rbs_ref.set_current(true);
-            rbs_ref.set_current(false);
-            rbs_ref.set_current(false);
-        });
+        let mut handles = Vec::with_capacity(5);
+        let barrier = Arc::new(Barrier::new(5));
 
-        rbs.set_current(true);
-        rbs.set_current(false);
+        for _ in 0..5 {
+            let c = barrier.clone();
+            let rbs = rbs.clone();
+            handles.push(thread::spawn(move || {
+                c.wait();
+                for _ in 0..5 {
+                    rbs.set_current(true);
+                    rbs.set_current(false);
+                    rbs.set_current(true);
+                }
+            }));
+        }
 
-        t.join().expect("join failed");
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
         assert_eq!(
             rbs.card.load(Ordering::SeqCst),
             rbs.ring
@@ -100,6 +108,6 @@ mod tests {
                 .map(|b| to_int(b.load(Ordering::SeqCst)))
                 .fold(0, |acc, i| acc + i)
         );
-        assert_eq!(6 % 5, rbs.index.load(Ordering::SeqCst));
+        assert_eq!((5 * 5 * 3) % 7, rbs.index.load(Ordering::SeqCst));
     }
 }
