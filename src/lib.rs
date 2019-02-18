@@ -1,9 +1,23 @@
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+use crossbeam_utils::Backoff;
+
+pub struct Recloser {
+    state: RecloserState,
+}
+
+impl Recloser {
+    pub fn new(len: usize) -> Self {
+        Recloser {
+            state: RecloserState::Closed(RingBitBuffer::new(len)),
+        }
+    }
+}
+
 enum RecloserState {
-    Open(RingBitSet),
-    HalfOpen(RingBitSet),
-    Closed(RingBitSet),
+    Open(RingBitBuffer),
+    HalfOpen(RingBitBuffer),
+    Closed(RingBitBuffer),
 }
 
 impl RecloserState {
@@ -16,7 +30,7 @@ impl RecloserState {
 }
 
 #[derive(Debug)]
-struct RingBitSet {
+struct RingBitBuffer {
     spinlock: AtomicBool,
     len: usize,
     card: AtomicUsize,
@@ -24,7 +38,7 @@ struct RingBitSet {
     index: AtomicUsize,
 }
 
-impl RingBitSet {
+impl RingBitBuffer {
     pub fn new(len: usize) -> Self {
         let mut buf = Vec::with_capacity(len);
 
@@ -42,10 +56,13 @@ impl RingBitSet {
     }
 
     pub fn set_current(&self, val_new: bool) -> bool {
+        let backoff = Backoff::new();
         while self
             .spinlock
             .compare_and_swap(false, true, Ordering::Acquire)
-        {}
+        {
+            backoff.snooze();
+        }
 
         let i = self.index.load(Ordering::SeqCst);
         let j = if i == self.len - 1 { 0 } else { i + 1 };
@@ -79,7 +96,7 @@ mod tests {
 
     #[test]
     fn it_works() {
-        let rbs = Arc::new(RingBitSet::new(7));
+        let rbs = Arc::new(RingBitBuffer::new(7));
 
         let mut handles = Vec::with_capacity(5);
         let barrier = Arc::new(Barrier::new(5));
