@@ -2,15 +2,87 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use crossbeam_utils::Backoff;
 
-pub struct Recloser {
+pub struct Recloser<P, E>
+where
+    P: FailurePredicate<E>,
+{
+    predicate: P,
     state: RecloserState,
+    marker: std::marker::PhantomData<E>,
 }
 
-impl Recloser {
-    pub fn new(len: usize) -> Self {
+impl<P, E> Recloser<P, E>
+where
+    P: FailurePredicate<E>,
+{
+    pub fn new(len: usize, predicate: P) -> Self {
         Recloser {
+            predicate,
             state: RecloserState::Closed(RingBitBuffer::new(len)),
+            marker: std::marker::PhantomData,
         }
+    }
+
+    pub fn call<F, R>(&self, f: F) -> Result<R, Error<E>>
+    where
+        F: FnOnce() -> Result<R, E>,
+    {
+        if !self.call_permitted() {
+            return Err(Error::Rejected);
+        }
+
+        match f() {
+            Ok(ok) => {
+                self.on_success();
+                Ok(ok)
+            }
+            Err(err) => {
+                if self.predicate.is_failure(&err) {
+                    self.on_error();
+                } else {
+                    self.on_success();
+                }
+                Err(Error::Inner(err))
+            }
+        }
+    }
+
+    fn call_permitted(&self) -> bool {
+        match self.state {
+            RecloserState::Closed(_) => true,
+            _ => true,
+        }
+    }
+
+    fn on_success(&self) {}
+
+    fn on_error(&self) {}
+}
+
+#[derive(Debug)]
+pub enum Error<E> {
+    Inner(E),
+    Rejected,
+}
+
+pub trait FailurePredicate<E> {
+    fn is_failure(&self, err: &E) -> bool;
+}
+
+impl<F, E> FailurePredicate<E> for F
+where
+    F: Fn(&E) -> bool,
+{
+    fn is_failure(&self, err: &E) -> bool {
+        self(err)
+    }
+}
+
+pub struct Any;
+
+impl<E> FailurePredicate<E> for Any {
+    fn is_failure(&self, _err: &E) -> bool {
+        true
     }
 }
 
@@ -20,14 +92,7 @@ enum RecloserState {
     Closed(RingBitBuffer),
 }
 
-impl RecloserState {
-    pub fn call_permitted(&self) -> bool {
-        match *self {
-            RecloserState::Closed(_) => true,
-            _ => true,
-        }
-    }
-}
+impl RecloserState {}
 
 #[derive(Debug)]
 struct RingBitBuffer {
