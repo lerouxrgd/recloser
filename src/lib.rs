@@ -1,6 +1,17 @@
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::time::Instant;
 
 use crossbeam_utils::Backoff;
+
+#[derive(Debug)]
+pub enum Error<E> {
+    Inner(E),
+    Rejected,
+}
+
+pub trait FailurePredicate<E> {
+    fn is_failure(&self, err: &E) -> bool;
+}
 
 pub struct Recloser<P, E>
 where
@@ -18,7 +29,7 @@ where
     pub fn new(len: usize, predicate: P) -> Self {
         Recloser {
             predicate,
-            state: RecloserState::Closed(RingBitBuffer::new(len)),
+            state: RecloserState::Closed(BitRingBuffer::new(len)),
             marker: std::marker::PhantomData,
         }
     }
@@ -50,6 +61,14 @@ where
     fn call_permitted(&self) -> bool {
         match self.state {
             RecloserState::Closed(_) => true,
+            RecloserState::Open(until) => {
+                if Instant::now() > until {
+                    // transit_to_half_open();
+                    true
+                } else {
+                    false
+                }
+            }
             _ => true,
         }
     }
@@ -57,16 +76,6 @@ where
     fn on_success(&self) {}
 
     fn on_error(&self) {}
-}
-
-#[derive(Debug)]
-pub enum Error<E> {
-    Inner(E),
-    Rejected,
-}
-
-pub trait FailurePredicate<E> {
-    fn is_failure(&self, err: &E) -> bool;
 }
 
 impl<F, E> FailurePredicate<E> for F
@@ -78,24 +87,24 @@ where
     }
 }
 
-pub struct Any;
+pub struct AnyError;
 
-impl<E> FailurePredicate<E> for Any {
+impl<E> FailurePredicate<E> for AnyError {
     fn is_failure(&self, _err: &E) -> bool {
         true
     }
 }
 
 enum RecloserState {
-    Open(RingBitBuffer),
-    HalfOpen(RingBitBuffer),
-    Closed(RingBitBuffer),
+    Open(Instant),
+    HalfOpen(BitRingBuffer),
+    Closed(BitRingBuffer),
 }
 
 impl RecloserState {}
 
 #[derive(Debug)]
-struct RingBitBuffer {
+struct BitRingBuffer {
     spinlock: AtomicBool,
     len: usize,
     card: AtomicUsize,
@@ -103,7 +112,7 @@ struct RingBitBuffer {
     index: AtomicUsize,
 }
 
-impl RingBitBuffer {
+impl BitRingBuffer {
     pub fn new(len: usize) -> Self {
         let mut buf = Vec::with_capacity(len);
 
@@ -144,6 +153,17 @@ impl RingBitBuffer {
         self.spinlock.store(false, Ordering::Release);
         return val_old;
     }
+
+    pub fn failure_rate(&self) -> f32 {
+        let backoff = Backoff::new();
+        while self
+            .spinlock
+            .compare_and_swap(false, true, Ordering::Acquire)
+        {
+            backoff.snooze();
+        }
+        self.card.load(Ordering::SeqCst) as f32 / self.len as f32
+    }
 }
 
 fn to_int(b: bool) -> usize {
@@ -160,8 +180,8 @@ mod tests {
     use std::thread;
 
     #[test]
-    fn it_works() {
-        let rbs = Arc::new(RingBitBuffer::new(7));
+    fn bit_ring_buffer_correctness() {
+        let rbs = Arc::new(BitRingBuffer::new(7));
 
         let mut handles = Vec::with_capacity(5);
         let barrier = Arc::new(Barrier::new(5));
