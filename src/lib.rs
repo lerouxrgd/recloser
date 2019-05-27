@@ -61,6 +61,7 @@ where
     fn call_permitted(&self) -> bool {
         match self.state {
             RecloserState::Closed(_) => true,
+            RecloserState::HalfOpen(_) => true,
             RecloserState::Open(until) => {
                 if Instant::now() > until {
                     // transit_to_half_open();
@@ -69,7 +70,6 @@ where
                     false
                 }
             }
-            _ => true,
         }
     }
 
@@ -101,8 +101,6 @@ enum RecloserState {
     Closed(BitRingBuffer),
 }
 
-impl RecloserState {}
-
 #[derive(Debug)]
 struct BitRingBuffer {
     spinlock: AtomicBool,
@@ -129,7 +127,7 @@ impl BitRingBuffer {
         }
     }
 
-    pub fn set_current(&self, val_new: bool) -> bool {
+    pub fn set_current(&self, val_new: bool) -> f32 {
         let backoff = Backoff::new();
         while self
             .spinlock
@@ -151,18 +149,7 @@ impl BitRingBuffer {
         self.card.store(card_new, Ordering::SeqCst);
 
         self.spinlock.store(false, Ordering::Release);
-        return val_old;
-    }
-
-    pub fn failure_rate(&self) -> f32 {
-        let backoff = Backoff::new();
-        while self
-            .spinlock
-            .compare_and_swap(false, true, Ordering::Acquire)
-        {
-            backoff.snooze();
-        }
-        self.card.load(Ordering::SeqCst) as f32 / self.len as f32
+        return card_new as f32 / self.len as f32;
     }
 }
 
@@ -181,20 +168,20 @@ mod tests {
 
     #[test]
     fn bit_ring_buffer_correctness() {
-        let rbs = Arc::new(BitRingBuffer::new(7));
+        let brb = Arc::new(BitRingBuffer::new(7));
 
         let mut handles = Vec::with_capacity(5);
         let barrier = Arc::new(Barrier::new(5));
 
         for _ in 0..5 {
             let c = barrier.clone();
-            let rbs = rbs.clone();
+            let brb = brb.clone();
             handles.push(thread::spawn(move || {
                 c.wait();
                 for _ in 0..5 {
-                    rbs.set_current(true);
-                    rbs.set_current(false);
-                    rbs.set_current(true);
+                    brb.set_current(true);
+                    brb.set_current(false);
+                    brb.set_current(true);
                 }
             }));
         }
@@ -204,12 +191,12 @@ mod tests {
         }
 
         assert_eq!(
-            rbs.card.load(Ordering::SeqCst),
-            rbs.ring
+            brb.card.load(Ordering::SeqCst),
+            brb.ring
                 .iter()
                 .map(|b| to_int(b.load(Ordering::SeqCst)))
                 .fold(0, |acc, i| acc + i)
         );
-        assert_eq!((5 * 5 * 3) % 7, rbs.index.load(Ordering::SeqCst));
+        assert_eq!((5 * 5 * 3) % 7, brb.index.load(Ordering::SeqCst));
     }
 }
