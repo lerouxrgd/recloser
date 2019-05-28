@@ -1,6 +1,8 @@
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::Instant;
 
+use arc_swap::{ArcSwap, ArcSwapAny};
 use crossbeam_utils::Backoff;
 
 #[derive(Debug)]
@@ -13,12 +15,23 @@ pub trait FailurePredicate<E> {
     fn is_failure(&self, err: &E) -> bool;
 }
 
+impl<F, E> FailurePredicate<E> for F
+where
+    F: Fn(&E) -> bool,
+{
+    fn is_failure(&self, err: &E) -> bool {
+        self(err)
+    }
+}
+
 pub struct Recloser<P, E>
 where
     P: FailurePredicate<E>,
 {
     predicate: P,
-    state: RecloserState,
+    len: usize,
+    failure_rate_threshold: f32,
+    state: ArcSwapAny<Arc<State>>,
     marker: std::marker::PhantomData<E>,
 }
 
@@ -26,10 +39,12 @@ impl<P, E> Recloser<P, E>
 where
     P: FailurePredicate<E>,
 {
-    pub fn new(len: usize, predicate: P) -> Self {
+    pub fn new(len: usize, failure_rate_threshold: f32, predicate: P) -> Self {
         Recloser {
             predicate,
-            state: RecloserState::Closed(BitRingBuffer::new(len)),
+            len,
+            failure_rate_threshold,
+            state: ArcSwap::from(Arc::new(State::Closed(RingBuffer::new(len)))),
             marker: std::marker::PhantomData,
         }
     }
@@ -59,12 +74,14 @@ where
     }
 
     fn call_permitted(&self) -> bool {
-        match self.state {
-            RecloserState::Closed(_) => true,
-            RecloserState::HalfOpen(_) => true,
-            RecloserState::Open(until) => {
+        match *self.state.lease() {
+            State::Closed(_) => true,
+            State::HalfOpen(_) => true,
+            State::Open(until) => {
                 if Instant::now() > until {
-                    // transit_to_half_open();
+                    // TODO: use transition method here
+                    self.state
+                        .swap(Arc::new(State::HalfOpen(RingBuffer::new(self.len))));
                     true
                 } else {
                     false
@@ -73,36 +90,37 @@ where
         }
     }
 
-    fn on_success(&self) {}
+    fn on_success(&self) {
+        match *self.state.load() {
+            State::Closed(ref rb) => {
+                if rb.set_current(true) > self.failure_rate_threshold {
+                    self.transition(Fsm::Closed, Fsm::Open);
+                }
+            }
+            State::HalfOpen(_) => (),
+            State::Open(_) => (),
+        };
+    }
 
     fn on_error(&self) {}
+
+    fn transition(&self, from: Fsm, to: Fsm) {}
 }
 
-impl<F, E> FailurePredicate<E> for F
-where
-    F: Fn(&E) -> bool,
-{
-    fn is_failure(&self, err: &E) -> bool {
-        self(err)
-    }
+enum Fsm {
+    Open,
+    HalfOpen,
+    Closed,
 }
 
-pub struct AnyError;
-
-impl<E> FailurePredicate<E> for AnyError {
-    fn is_failure(&self, _err: &E) -> bool {
-        true
-    }
-}
-
-enum RecloserState {
+enum State {
     Open(Instant),
-    HalfOpen(BitRingBuffer),
-    Closed(BitRingBuffer),
+    HalfOpen(RingBuffer),
+    Closed(RingBuffer),
 }
 
 #[derive(Debug)]
-struct BitRingBuffer {
+struct RingBuffer {
     spinlock: AtomicBool,
     len: usize,
     card: AtomicUsize,
@@ -110,7 +128,7 @@ struct BitRingBuffer {
     index: AtomicUsize,
 }
 
-impl BitRingBuffer {
+impl RingBuffer {
     pub fn new(len: usize) -> Self {
         let mut buf = Vec::with_capacity(len);
 
@@ -118,7 +136,7 @@ impl BitRingBuffer {
             buf.push(AtomicBool::new(false));
         }
 
-        Self {
+        RingBuffer {
             spinlock: AtomicBool::new(false),
             len: len,
             card: AtomicUsize::new(0),
@@ -160,6 +178,14 @@ fn to_int(b: bool) -> usize {
     }
 }
 
+pub struct AnyError;
+
+impl<E> FailurePredicate<E> for AnyError {
+    fn is_failure(&self, _err: &E) -> bool {
+        true
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -168,14 +194,14 @@ mod tests {
 
     #[test]
     fn bit_ring_buffer_correctness() {
-        let brb = Arc::new(BitRingBuffer::new(7));
+        let rb = Arc::new(RingBuffer::new(7));
 
         let mut handles = Vec::with_capacity(5);
         let barrier = Arc::new(Barrier::new(5));
 
         for _ in 0..5 {
             let c = barrier.clone();
-            let brb = brb.clone();
+            let brb = rb.clone();
             handles.push(thread::spawn(move || {
                 c.wait();
                 for _ in 0..5 {
@@ -191,12 +217,12 @@ mod tests {
         }
 
         assert_eq!(
-            brb.card.load(Ordering::SeqCst),
-            brb.ring
+            rb.card.load(Ordering::SeqCst),
+            rb.ring
                 .iter()
                 .map(|b| to_int(b.load(Ordering::SeqCst)))
                 .fold(0, |acc, i| acc + i)
         );
-        assert_eq!((5 * 5 * 3) % 7, brb.index.load(Ordering::SeqCst));
+        assert_eq!((5 * 5 * 3) % 7, rb.index.load(Ordering::SeqCst));
     }
 }
