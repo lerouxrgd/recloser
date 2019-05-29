@@ -8,5 +8,4 @@ license = "MIT"
 readme = "README.md"
 
 [dependencies]
-arc-swap = "0.3"
-crossbeam-utils = "0.6"
+crossbeam = "0.7"

@@ -1,9 +1,11 @@
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::{
+    AtomicBool, AtomicUsize,
+    Ordering::{Acquire, Release, SeqCst},
+};
 use std::time::Instant;
 
-use arc_swap::{ArcSwap, ArcSwapAny};
-use crossbeam_utils::Backoff;
+use crossbeam::epoch::{self as epoch, Atomic, Owned};
+use crossbeam::utils::Backoff;
 
 #[derive(Debug)]
 pub enum Error<E> {
@@ -31,7 +33,7 @@ where
     predicate: P,
     len: usize,
     failure_rate_threshold: f32,
-    state: ArcSwapAny<Arc<State>>,
+    state: Atomic<State>,
     marker: std::marker::PhantomData<E>,
 }
 
@@ -44,7 +46,7 @@ where
             predicate,
             len,
             failure_rate_threshold,
-            state: ArcSwap::from(Arc::new(State::Closed(RingBuffer::new(len)))),
+            state: Atomic::new(State::Closed(RingBuffer::new(len))),
             marker: std::marker::PhantomData,
         }
     }
@@ -74,14 +76,18 @@ where
     }
 
     fn call_permitted(&self) -> bool {
-        match *self.state.lease() {
+        let guard = epoch::pin();
+        match unsafe { self.state.load(SeqCst, &guard).deref() } {
             State::Closed(_) => true,
             State::HalfOpen(_) => true,
             State::Open(until) => {
-                if Instant::now() > until {
+                if Instant::now() > *until {
                     // TODO: use transition method here
-                    self.state
-                        .swap(Arc::new(State::HalfOpen(RingBuffer::new(self.len))));
+                    self.state.swap(
+                        Owned::new(State::HalfOpen(RingBuffer::new(self.len))),
+                        SeqCst,
+                        &guard,
+                    );
                     true
                 } else {
                     false
@@ -91,9 +97,10 @@ where
     }
 
     fn on_success(&self) {
-        match *self.state.load() {
+        let guard = epoch::pin();
+        match unsafe { self.state.load(SeqCst, &guard).deref() } {
             State::Closed(ref rb) => {
-                if rb.set_current(true) > self.failure_rate_threshold {
+                if rb.set_current(false) > self.failure_rate_threshold {
                     self.transition(Fsm::Closed, Fsm::Open);
                 }
             }
@@ -119,6 +126,7 @@ enum State {
     Closed(RingBuffer),
 }
 
+/// A `true` value represents a call that failed
 #[derive(Debug)]
 struct RingBuffer {
     spinlock: AtomicBool,
@@ -147,26 +155,23 @@ impl RingBuffer {
 
     pub fn set_current(&self, val_new: bool) -> f32 {
         let backoff = Backoff::new();
-        while self
-            .spinlock
-            .compare_and_swap(false, true, Ordering::Acquire)
-        {
+        while self.spinlock.compare_and_swap(false, true, Acquire) {
             backoff.snooze();
         }
 
-        let i = self.index.load(Ordering::SeqCst);
+        let i = self.index.load(SeqCst);
         let j = if i == self.len - 1 { 0 } else { i + 1 };
 
-        let val_old = self.ring[i].load(Ordering::SeqCst);
+        let val_old = self.ring[i].load(SeqCst);
 
-        let card_old = self.card.load(Ordering::SeqCst);
+        let card_old = self.card.load(SeqCst);
         let card_new = card_old - to_int(val_old) + to_int(val_new);
 
-        self.ring[i].store(val_new, Ordering::SeqCst);
-        self.index.store(j, Ordering::SeqCst);
-        self.card.store(card_new, Ordering::SeqCst);
+        self.ring[i].store(val_new, SeqCst);
+        self.index.store(j, SeqCst);
+        self.card.store(card_new, SeqCst);
 
-        self.spinlock.store(false, Ordering::Release);
+        self.spinlock.store(false, Release);
         return card_new as f32 / self.len as f32;
     }
 }
@@ -217,12 +222,12 @@ mod tests {
         }
 
         assert_eq!(
-            rb.card.load(Ordering::SeqCst),
+            rb.card.load(SeqCst),
             rb.ring
                 .iter()
-                .map(|b| to_int(b.load(Ordering::SeqCst)))
+                .map(|b| to_int(b.load(SeqCst)))
                 .fold(0, |acc, i| acc + i)
         );
-        assert_eq!((5 * 5 * 3) % 7, rb.index.load(Ordering::SeqCst));
+        assert_eq!((5 * 5 * 3) % 7, rb.index.load(SeqCst));
     }
 }
