@@ -2,9 +2,9 @@ use std::sync::atomic::{
     AtomicBool, AtomicUsize,
     Ordering::{Acquire, Release, SeqCst},
 };
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
-use crossbeam::epoch::{self as epoch, Atomic, Owned};
+use crossbeam::epoch::{self as epoch, Atomic, Guard, Owned};
 use crossbeam::utils::Backoff;
 
 #[derive(Debug)]
@@ -33,6 +33,7 @@ where
     predicate: P,
     len: usize,
     failure_rate_threshold: f32,
+    wait_open: Duration,
     state: Atomic<State>,
     marker: std::marker::PhantomData<E>,
 }
@@ -41,11 +42,12 @@ impl<P, E> Recloser<P, E>
 where
     P: FailurePredicate<E>,
 {
-    pub fn new(len: usize, failure_rate_threshold: f32, predicate: P) -> Self {
+    pub fn new(len: usize, failure_rate_threshold: f32, wait_open: Duration, predicate: P) -> Self {
         Recloser {
             predicate,
             len,
             failure_rate_threshold,
+            wait_open,
             state: Atomic::new(State::Closed(RingBuffer::new(len))),
             marker: std::marker::PhantomData,
         }
@@ -55,34 +57,33 @@ where
     where
         F: FnOnce() -> Result<R, E>,
     {
-        if !self.call_permitted() {
+        let guard = &epoch::pin();
+        if !self.call_permitted(guard) {
             return Err(Error::Rejected);
         }
 
         match f() {
             Ok(ok) => {
-                self.on_success();
+                self.on_success(guard);
                 Ok(ok)
             }
             Err(err) => {
                 if self.predicate.is_failure(&err) {
-                    self.on_error();
+                    self.on_error(guard);
                 } else {
-                    self.on_success();
+                    self.on_success(guard);
                 }
                 Err(Error::Inner(err))
             }
         }
     }
 
-    fn call_permitted(&self) -> bool {
-        let guard = epoch::pin();
-        match unsafe { self.state.load(SeqCst, &guard).deref() } {
+    fn call_permitted(&self, guard: &Guard) -> bool {
+        match unsafe { self.state.load(SeqCst, guard).deref() } {
             State::Closed(_) => true,
             State::HalfOpen(_) => true,
             State::Open(until) => {
                 if Instant::now() > *until {
-                    // TODO: use transition method here
                     self.state.swap(
                         Owned::new(State::HalfOpen(RingBuffer::new(self.len))),
                         SeqCst,
@@ -96,28 +97,38 @@ where
         }
     }
 
-    fn on_success(&self) {
-        let guard = epoch::pin();
-        match unsafe { self.state.load(SeqCst, &guard).deref() } {
-            State::Closed(ref rb) => {
-                if rb.set_current(false) > self.failure_rate_threshold {
-                    self.transition(Fsm::Closed, Fsm::Open);
+    fn on_success(&self, guard: &Guard) {
+        match unsafe { self.state.load(SeqCst, guard).deref() } {
+            State::Closed(rb) => {
+                rb.set_current(false);
+            }
+            State::HalfOpen(rb) => {
+                if rb.set_current(false) < self.failure_rate_threshold {
+                    self.state.swap(
+                        Owned::new(State::Closed(RingBuffer::new(self.len))),
+                        SeqCst,
+                        &guard,
+                    );
                 }
             }
-            State::HalfOpen(_) => (),
-            State::Open(_) => (),
+            State::Open(_) => unreachable!(),
         };
     }
 
-    fn on_error(&self) {}
-
-    fn transition(&self, from: Fsm, to: Fsm) {}
-}
-
-enum Fsm {
-    Open,
-    HalfOpen,
-    Closed,
+    fn on_error(&self, guard: &Guard) {
+        match unsafe { self.state.load(SeqCst, guard).deref() } {
+            State::Closed(rb) | State::HalfOpen(rb) => {
+                if rb.set_current(true) > self.failure_rate_threshold {
+                    self.state.swap(
+                        Owned::new(State::Open(Instant::now() + self.wait_open)),
+                        SeqCst,
+                        &guard,
+                    );
+                }
+            }
+            State::Open(_) => unreachable!(),
+        };
+    }
 }
 
 enum State {
