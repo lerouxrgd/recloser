@@ -143,6 +143,7 @@ struct RingBuffer {
     spinlock: AtomicBool,
     len: usize,
     card: AtomicUsize,
+    filling: AtomicUsize,
     ring: Box<[AtomicBool]>,
     index: AtomicUsize,
 }
@@ -159,6 +160,7 @@ impl RingBuffer {
             spinlock: AtomicBool::new(false),
             len: len,
             card: AtomicUsize::new(0),
+            filling: AtomicUsize::new(0),
             ring: buf.into_boxed_slice(),
             index: AtomicUsize::new(0),
         }
@@ -178,12 +180,19 @@ impl RingBuffer {
         let card_old = self.card.load(SeqCst);
         let card_new = card_old - to_int(val_old) + to_int(val_new);
 
+        let failure_rate = if self.filling.load(SeqCst) == self.len {
+            card_new as f32 / self.len as f32
+        } else {
+            self.filling.fetch_add(1, SeqCst);
+            -1.0
+        };
+
         self.ring[i].store(val_new, SeqCst);
         self.index.store(j, SeqCst);
         self.card.store(card_new, SeqCst);
 
         self.spinlock.store(false, Release);
-        return card_new as f32 / self.len as f32;
+        failure_rate
     }
 }
 
