@@ -31,9 +31,10 @@ where
     P: FailurePredicate<E>,
 {
     predicate: P,
-    len: usize,
-    failure_rate_threshold: f32,
-    wait_open: Duration,
+    threshold: f32,
+    closed_len: usize,
+    half_open_len: usize,
+    open_wait: Duration,
     state: Atomic<State>,
     marker: std::marker::PhantomData<E>,
 }
@@ -42,13 +43,20 @@ impl<P, E> Recloser<P, E>
 where
     P: FailurePredicate<E>,
 {
-    pub fn new(len: usize, failure_rate_threshold: f32, wait_open: Duration, predicate: P) -> Self {
+    pub fn new(
+        predicate: P,
+        threshold: f32,
+        closed_len: usize,
+        half_open_len: usize,
+        open_wait: Duration,
+    ) -> Self {
         Recloser {
             predicate,
-            len,
-            failure_rate_threshold,
-            wait_open,
-            state: Atomic::new(State::Closed(RingBuffer::new(len))),
+            threshold,
+            closed_len,
+            half_open_len,
+            open_wait,
+            state: Atomic::new(State::Closed(RingBuffer::new(closed_len))),
             marker: std::marker::PhantomData,
         }
     }
@@ -85,9 +93,9 @@ where
             State::Open(until) => {
                 if Instant::now() > *until {
                     self.state.swap(
-                        Owned::new(State::HalfOpen(RingBuffer::new(self.len))),
+                        Owned::new(State::HalfOpen(RingBuffer::new(self.half_open_len))),
                         SeqCst,
-                        &guard,
+                        guard,
                     );
                     true
                 } else {
@@ -103,30 +111,32 @@ where
                 rb.set_current(false);
             }
             State::HalfOpen(rb) => {
-                if rb.set_current(false) < self.failure_rate_threshold {
+                let failure_rate = rb.set_current(false);
+                if failure_rate > -1.0 && failure_rate < self.threshold {
                     self.state.swap(
-                        Owned::new(State::Closed(RingBuffer::new(self.len))),
+                        Owned::new(State::Closed(RingBuffer::new(self.closed_len))),
                         SeqCst,
-                        &guard,
+                        guard,
                     );
                 }
             }
-            State::Open(_) => unreachable!(),
+            State::Open(_) => (),
         };
     }
 
     fn on_error(&self, guard: &Guard) {
         match unsafe { self.state.load(SeqCst, guard).deref() } {
             State::Closed(rb) | State::HalfOpen(rb) => {
-                if rb.set_current(true) > self.failure_rate_threshold {
+                let failure_rate = rb.set_current(true);
+                if failure_rate > -1.0 && failure_rate < self.threshold {
                     self.state.swap(
-                        Owned::new(State::Open(Instant::now() + self.wait_open)),
+                        Owned::new(State::Open(Instant::now() + self.open_wait)),
                         SeqCst,
-                        &guard,
+                        guard,
                     );
                 }
             }
-            State::Open(_) => unreachable!(),
+            State::Open(_) => (),
         };
     }
 }
@@ -140,7 +150,7 @@ enum State {
 /// A `true` value represents a call that failed
 #[derive(Debug)]
 struct RingBuffer {
-    spinlock: AtomicBool,
+    spin_lock: AtomicBool,
     len: usize,
     card: AtomicUsize,
     filling: AtomicUsize,
@@ -157,7 +167,7 @@ impl RingBuffer {
         }
 
         RingBuffer {
-            spinlock: AtomicBool::new(false),
+            spin_lock: AtomicBool::new(false),
             len: len,
             card: AtomicUsize::new(0),
             filling: AtomicUsize::new(0),
@@ -168,7 +178,7 @@ impl RingBuffer {
 
     pub fn set_current(&self, val_new: bool) -> f32 {
         let backoff = Backoff::new();
-        while self.spinlock.compare_and_swap(false, true, Acquire) {
+        while self.spin_lock.compare_and_swap(false, true, Acquire) {
             backoff.snooze();
         }
 
@@ -180,7 +190,7 @@ impl RingBuffer {
         let card_old = self.card.load(SeqCst);
         let card_new = card_old - to_int(val_old) + to_int(val_new);
 
-        let failure_rate = if self.filling.load(SeqCst) == self.len {
+        let rate = if self.filling.load(SeqCst) == self.len {
             card_new as f32 / self.len as f32
         } else {
             self.filling.fetch_add(1, SeqCst);
@@ -191,8 +201,8 @@ impl RingBuffer {
         self.index.store(j, SeqCst);
         self.card.store(card_new, SeqCst);
 
-        self.spinlock.store(false, Release);
-        failure_rate
+        self.spin_lock.store(false, Release);
+        rate
     }
 }
 
@@ -218,18 +228,18 @@ mod tests {
     use std::thread;
 
     #[test]
-    fn bit_ring_buffer_correctness() {
+    fn ring_buffer_correctness() {
         let rb = Arc::new(RingBuffer::new(7));
 
-        let mut handles = Vec::with_capacity(5);
-        let barrier = Arc::new(Barrier::new(5));
+        let mut handles = Vec::with_capacity(8);
+        let barrier = Arc::new(Barrier::new(8));
 
-        for _ in 0..5 {
+        for _ in 0..8 {
             let c = barrier.clone();
             let brb = rb.clone();
             handles.push(thread::spawn(move || {
                 c.wait();
-                for _ in 0..5 {
+                for _ in 0..100 {
                     brb.set_current(true);
                     brb.set_current(false);
                     brb.set_current(true);
@@ -248,6 +258,6 @@ mod tests {
                 .map(|b| to_int(b.load(SeqCst)))
                 .fold(0, |acc, i| acc + i)
         );
-        assert_eq!((5 * 5 * 3) % 7, rb.index.load(SeqCst));
+        assert_eq!((8 * 100 * 3) % 7, rb.index.load(SeqCst));
     }
 }
