@@ -1,8 +1,13 @@
+#[cfg(test)]
+use fake_clock::FakeClock as Instant;
+#[cfg(not(test))]
+use std::time::Instant;
+
 use std::sync::atomic::{
     AtomicBool, AtomicUsize,
     Ordering::{Acquire, Release, SeqCst},
 };
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crossbeam::epoch::{self as epoch, Atomic, Guard, Owned};
 use crossbeam::utils::Backoff;
@@ -13,22 +18,23 @@ pub enum Error<E> {
     Rejected,
 }
 
-pub trait FailurePredicate<E> {
-    fn is_failure(&self, err: &E) -> bool;
+pub trait ErrorPredicate<E> {
+    fn is_err(&self, err: &E) -> bool;
 }
 
-impl<F, E> FailurePredicate<E> for F
+impl<F, E> ErrorPredicate<E> for F
 where
     F: Fn(&E) -> bool,
 {
-    fn is_failure(&self, err: &E) -> bool {
+    fn is_err(&self, err: &E) -> bool {
         self(err)
     }
 }
 
+#[derive(Debug)]
 pub struct Recloser<P, E>
 where
-    P: FailurePredicate<E>,
+    P: ErrorPredicate<E>,
 {
     predicate: P,
     threshold: f32,
@@ -41,7 +47,7 @@ where
 
 impl<P, E> Recloser<P, E>
 where
-    P: FailurePredicate<E>,
+    P: ErrorPredicate<E>,
 {
     pub fn new(
         predicate: P,
@@ -76,7 +82,7 @@ where
                 Ok(ok)
             }
             Err(err) => {
-                if self.predicate.is_failure(&err) {
+                if self.predicate.is_err(&err) {
                     self.on_error(guard);
                 } else {
                     self.on_success(guard);
@@ -112,7 +118,7 @@ where
             }
             State::HalfOpen(rb) => {
                 let failure_rate = rb.set_current(false);
-                if failure_rate > -1.0 && failure_rate < self.threshold {
+                if failure_rate != -1.0 && failure_rate <= self.threshold {
                     self.state.swap(
                         Owned::new(State::Closed(RingBuffer::new(self.closed_len))),
                         SeqCst,
@@ -128,7 +134,7 @@ where
         match unsafe { self.state.load(SeqCst, guard).deref() } {
             State::Closed(rb) | State::HalfOpen(rb) => {
                 let failure_rate = rb.set_current(true);
-                if failure_rate > -1.0 && failure_rate < self.threshold {
+                if failure_rate != -1.0 && failure_rate >= self.threshold {
                     self.state.swap(
                         Owned::new(State::Open(Instant::now() + self.open_wait)),
                         SeqCst,
@@ -141,6 +147,7 @@ where
     }
 }
 
+#[derive(Debug)]
 enum State {
     Open(Instant),
     HalfOpen(RingBuffer),
@@ -213,10 +220,11 @@ fn to_int(b: bool) -> usize {
     }
 }
 
+#[derive(Debug)]
 pub struct AnyError;
 
-impl<E> FailurePredicate<E> for AnyError {
-    fn is_failure(&self, _err: &E) -> bool {
+impl<E> ErrorPredicate<E> for AnyError {
+    fn is_err(&self, _err: &E) -> bool {
         true
     }
 }
@@ -224,8 +232,15 @@ impl<E> FailurePredicate<E> for AnyError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use fake_clock::FakeClock;
+    use matches::assert_matches;
     use std::sync::{Arc, Barrier};
     use std::thread;
+
+    fn sleep(time: u64) {
+        FakeClock::advance_time(time);
+    }
 
     #[test]
     fn ring_buffer_correctness() {
@@ -259,5 +274,50 @@ mod tests {
                 .fold(0, |acc, i| acc + i)
         );
         assert_eq!((8 * 100 * 3) % 7, rb.index.load(SeqCst));
+    }
+
+    #[test]
+    fn recloser_correctness() {
+        let recl = Recloser::new(AnyError, 0.5, 2, 2, Duration::from_secs(1));
+        let guard = &epoch::pin();
+
+        // Fill the State::Closed ring buffer
+        for _ in 0..2 {
+            assert_matches!(recl.call(|| Err::<(), ()>(())), Err(Error::Inner(())));
+            assert_matches!(
+                unsafe { &recl.state.load(SeqCst, guard).deref() },
+                State::Closed(_)
+            );
+        }
+
+        // Transition to State::Open on next call
+        assert_matches!(recl.call(|| Err::<(), ()>(())), Err(Error::Inner(())));
+        assert_matches!(
+            unsafe { &recl.state.load(SeqCst, guard).deref() },
+            State::Open(_)
+        );
+        assert_matches!(recl.call(|| Err::<(), ()>(())), Err(Error::Rejected));
+
+        // Transition to State::HalfOpen on first call after 1 sec
+        sleep(1500);
+        assert_matches!(recl.call(|| Ok::<(), ()>(())), Ok(()));
+        assert_matches!(
+            unsafe { &recl.state.load(SeqCst, guard).deref() },
+            State::HalfOpen(_)
+        );
+
+        // Fill the State::HalfOpen ring buffer
+        assert_matches!(recl.call(|| Ok::<(), ()>(())), Ok(()));
+        assert_matches!(
+            unsafe { &recl.state.load(SeqCst, guard).deref() },
+            State::HalfOpen(_)
+        );
+
+        // Transition to State::Closed when failure rate above threshold
+        assert_matches!(recl.call(|| Ok::<(), ()>(())), Ok(()));
+        assert_matches!(
+            unsafe { &recl.state.load(SeqCst, guard).deref() },
+            State::Closed(_)
+        );
     }
 }
