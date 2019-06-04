@@ -231,12 +231,14 @@ impl<E> ErrorPredicate<E> for AnyError {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::sync::{Arc, Barrier};
+    use std::thread;
 
     use fake_clock::FakeClock;
     use matches::assert_matches;
-    use std::sync::{Arc, Barrier};
-    use std::thread;
+    use rand::prelude::*;
+
+    use super::*;
 
     fn sleep(time: u64) {
         FakeClock::advance_time(time);
@@ -251,13 +253,13 @@ mod tests {
 
         for _ in 0..8 {
             let c = barrier.clone();
-            let brb = rb.clone();
+            let rb = rb.clone();
             handles.push(thread::spawn(move || {
                 c.wait();
                 for _ in 0..100 {
-                    brb.set_current(true);
-                    brb.set_current(false);
-                    brb.set_current(true);
+                    rb.set_current(true);
+                    rb.set_current(false);
+                    rb.set_current(true);
                 }
             }));
         }
@@ -313,11 +315,42 @@ mod tests {
             State::HalfOpen(_)
         );
 
-        // Transition to State::Closed when failure rate above threshold
+        // Transition to State::Closed when failure rate below threshold
         assert_matches!(recl.call(|| Ok::<(), ()>(())), Ok(()));
         assert_matches!(
             unsafe { &recl.state.load(SeqCst, guard).deref() },
             State::Closed(_)
         );
+    }
+
+    #[test]
+    fn recloser_shared() {
+        let recl = Arc::new(Recloser::new(AnyError, 0.5, 10, 5, Duration::from_secs(1)));
+
+        let mut handles = Vec::with_capacity(8);
+        let barrier = Arc::new(Barrier::new(8));
+
+        for _ in 0..8 {
+            let c = barrier.clone();
+            let recl = recl.clone();
+            handles.push(thread::spawn(move || {
+                let mut rng = rand::thread_rng();
+                c.wait();
+                for _ in 0..1000 {
+                    let _ = recl.call(|| Ok::<(), ()>(()));
+                    let _ = recl.call(|| Err::<(), ()>(()));
+                    if rng.gen::<f64>() < 0.5 {
+                        let _ = recl.call(|| Err::<(), ()>(()));
+                    } else {
+                        let _ = recl.call(|| Ok::<(), ()>(()));
+                    }
+                    sleep(1500);
+                }
+            }));
+        }
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
     }
 }
