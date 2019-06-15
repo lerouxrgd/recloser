@@ -1,6 +1,6 @@
-#[cfg(test)]
+#[cfg(any(test, feature = "test"))]
 use fake_clock::FakeClock as Instant;
-#[cfg(not(test))]
+#[cfg(all(not(test), not(feature = "test")))]
 use std::time::Instant;
 
 use std::sync::atomic::{
@@ -324,7 +324,7 @@ mod tests {
     }
 
     #[test]
-    fn recloser_shared() {
+    fn recloser_concurrent() {
         let recl = Arc::new(Recloser::new(AnyError, 0.5, 10, 5, Duration::from_secs(1)));
 
         let mut handles = Vec::with_capacity(8);
