@@ -12,6 +12,7 @@ crossbeam = "0.7"
 
 [dev-dependencies]
 criterion = "0.2"
+failsafe = "0.3"
 fake_clock = "0.3"
 matches = "0.1"
 num_cpus = "1.10"
