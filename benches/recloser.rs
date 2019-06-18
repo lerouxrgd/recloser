@@ -1,10 +1,11 @@
 use std::time::Duration;
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use failsafe::{CircuitBreaker, Config};
 use fake_clock::FakeClock;
 use num_cpus;
 use rayon::prelude::*;
+
+use failsafe::{backoff, failure_policy, CircuitBreaker, Config};
 use recloser::{AnyError, Recloser};
 
 const ITER_C: u64 = 10_000;
@@ -21,8 +22,27 @@ fn dangerous_call(n: u64) -> Result<u64, u64> {
     }
 }
 
+fn make_recloser<E>() -> Recloser<AnyError, E> {
+    Recloser::of(AnyError)
+        .error_rate(0.01)
+        .closed_len(10)
+        .half_open_len(5)
+        .open_wait(Duration::from_secs(1))
+        .build()
+}
+
+fn make_failsafe() -> failsafe::StateMachine<
+    failure_policy::OrElse<
+        failure_policy::SuccessRateOverTimeWindow<backoff::EqualJittered>,
+        failure_policy::ConsecutiveFailures<backoff::EqualJittered>,
+    >,
+    (),
+> {
+    Config::new().build()
+}
+
 fn recloser_simple() {
-    let recloser = Recloser::new(AnyError, 0.01, 10, 5, Duration::from_secs(1));
+    let recloser = make_recloser();
 
     (0..ITER_C).into_iter().for_each(|i| {
         match recloser.call(|| dangerous_call(i)) {
@@ -35,7 +55,7 @@ fn recloser_simple() {
 }
 
 fn failsafe_simple() {
-    let circuit_breaker = Config::new().build();
+    let circuit_breaker = make_failsafe();
 
     (0..ITER_C).into_iter().for_each(|i| {
         match circuit_breaker.call(|| dangerous_call(i)) {
@@ -48,7 +68,7 @@ fn failsafe_simple() {
 }
 
 fn recloser_concurrent() {
-    let recloser = Recloser::new(AnyError, 0.01, 10, 5, Duration::from_secs(1));
+    let recloser = make_recloser();
 
     (0..ITER_C * num_cpus::get() as u64)
         .into_par_iter()
@@ -63,7 +83,7 @@ fn recloser_concurrent() {
 }
 
 fn failsafe_concurrent() {
-    let circuit_breaker = Config::new().build();
+    let circuit_breaker = make_failsafe();
 
     (0..ITER_C * num_cpus::get() as u64)
         .into_par_iter()

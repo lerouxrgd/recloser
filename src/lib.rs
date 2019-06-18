@@ -1,16 +1,16 @@
-#[cfg(any(test, feature = "test"))]
+mod ring_buffer;
+
+#[cfg(test)]
 use fake_clock::FakeClock as Instant;
-#[cfg(all(not(test), not(feature = "test")))]
+#[cfg(not(test))]
 use std::time::Instant;
 
-use std::sync::atomic::{
-    AtomicBool, AtomicUsize,
-    Ordering::{Acquire, Release, SeqCst},
-};
+use std::sync::atomic::Ordering::SeqCst;
 use std::time::Duration;
 
 use crossbeam::epoch::{self as epoch, Atomic, Guard, Owned};
-use crossbeam::utils::Backoff;
+
+use crate::ring_buffer::RingBuffer;
 
 #[derive(Debug)]
 pub enum Error<E> {
@@ -32,6 +32,15 @@ where
 }
 
 #[derive(Debug)]
+pub struct AnyError;
+
+impl<E> ErrorPredicate<E> for AnyError {
+    fn is_err(&self, _err: &E) -> bool {
+        true
+    }
+}
+
+#[derive(Debug)]
 pub struct Recloser<P, E>
 where
     P: ErrorPredicate<E>,
@@ -49,22 +58,8 @@ impl<P, E> Recloser<P, E>
 where
     P: ErrorPredicate<E>,
 {
-    pub fn new(
-        predicate: P,
-        threshold: f32,
-        closed_len: usize,
-        half_open_len: usize,
-        open_wait: Duration,
-    ) -> Self {
-        Recloser {
-            predicate,
-            threshold,
-            closed_len,
-            half_open_len,
-            open_wait,
-            state: Atomic::new(State::Closed(RingBuffer::new(closed_len))),
-            marker: std::marker::PhantomData,
-        }
+    pub fn of(error_predicate: P) -> RecloserBuilder<P, E> {
+        RecloserBuilder::new(error_predicate)
     }
 
     pub fn call<F, R>(&self, f: F) -> Result<R, Error<E>>
@@ -72,6 +67,7 @@ where
         F: FnOnce() -> Result<R, E>,
     {
         let guard = &epoch::pin();
+
         if !self.call_permitted(guard) {
             return Err(Error::Rejected);
         }
@@ -154,78 +150,70 @@ enum State {
     Closed(RingBuffer),
 }
 
-/// A `true` value represents a call that failed
 #[derive(Debug)]
-struct RingBuffer {
-    spin_lock: AtomicBool,
-    len: usize,
-    card: AtomicUsize,
-    filling: AtomicUsize,
-    ring: Box<[AtomicBool]>,
-    index: AtomicUsize,
+pub struct RecloserBuilder<P, E>
+where
+    P: ErrorPredicate<E>,
+{
+    predicate: P,
+    threshold: f32,
+    closed_len: usize,
+    half_open_len: usize,
+    open_wait: Duration,
+    marker: std::marker::PhantomData<E>,
 }
 
-impl RingBuffer {
-    pub fn new(len: usize) -> Self {
-        let mut buf = Vec::with_capacity(len);
-
-        for _ in 0..len {
-            buf.push(AtomicBool::new(false));
-        }
-
-        RingBuffer {
-            spin_lock: AtomicBool::new(false),
-            len: len,
-            card: AtomicUsize::new(0),
-            filling: AtomicUsize::new(0),
-            ring: buf.into_boxed_slice(),
-            index: AtomicUsize::new(0),
+impl<P, E> RecloserBuilder<P, E>
+where
+    P: ErrorPredicate<E>,
+{
+    fn new(predicate: P) -> Self {
+        RecloserBuilder {
+            predicate,
+            threshold: 0.5,
+            closed_len: 100,
+            half_open_len: 10,
+            open_wait: Duration::from_secs(30),
+            marker: std::marker::PhantomData,
         }
     }
 
-    pub fn set_current(&self, val_new: bool) -> f32 {
-        let backoff = Backoff::new();
-        while self.spin_lock.compare_and_swap(false, true, Acquire) {
-            backoff.snooze();
+    pub fn error_rate(mut self, threshold: f32) -> Self {
+        self.threshold = threshold;
+        self
+    }
+
+    pub fn closed_len(mut self, closed_len: usize) -> Self {
+        self.closed_len = closed_len;
+        self
+    }
+
+    pub fn half_open_len(mut self, half_open_len: usize) -> Self {
+        self.half_open_len = half_open_len;
+        self
+    }
+
+    pub fn open_wait(mut self, open_wait: Duration) -> Self {
+        self.open_wait = open_wait;
+        self
+    }
+
+    pub fn build(self) -> Recloser<P, E> {
+        Recloser {
+            predicate: self.predicate,
+            threshold: self.threshold,
+            closed_len: self.closed_len,
+            half_open_len: self.half_open_len,
+            open_wait: self.open_wait,
+            state: Atomic::new(State::Closed(RingBuffer::new(self.closed_len))),
+            marker: std::marker::PhantomData,
         }
-
-        let i = self.index.load(SeqCst);
-        let j = if i == self.len - 1 { 0 } else { i + 1 };
-
-        let val_old = self.ring[i].load(SeqCst);
-
-        let card_old = self.card.load(SeqCst);
-        let card_new = card_old - to_int(val_old) + to_int(val_new);
-
-        let rate = if self.filling.load(SeqCst) == self.len {
-            card_new as f32 / self.len as f32
-        } else {
-            self.filling.fetch_add(1, SeqCst);
-            -1.0
-        };
-
-        self.ring[i].store(val_new, SeqCst);
-        self.index.store(j, SeqCst);
-        self.card.store(card_new, SeqCst);
-
-        self.spin_lock.store(false, Release);
-        rate
     }
 }
 
-fn to_int(b: bool) -> usize {
-    match b {
-        true => 1,
-        false => 0,
-    }
-}
-
-#[derive(Debug)]
-pub struct AnyError;
-
-impl<E> ErrorPredicate<E> for AnyError {
-    fn is_err(&self, _err: &E) -> bool {
-        true
+impl<E> Default for Recloser<AnyError, E> {
+    fn default() -> Self {
+        Recloser::of(AnyError).build()
     }
 }
 
@@ -245,42 +233,14 @@ mod tests {
     }
 
     #[test]
-    fn ring_buffer_correctness() {
-        let rb = Arc::new(RingBuffer::new(7));
-
-        let mut handles = Vec::with_capacity(8);
-        let barrier = Arc::new(Barrier::new(8));
-
-        for _ in 0..8 {
-            let c = barrier.clone();
-            let rb = rb.clone();
-            handles.push(thread::spawn(move || {
-                c.wait();
-                for _ in 0..100 {
-                    rb.set_current(true);
-                    rb.set_current(false);
-                    rb.set_current(true);
-                }
-            }));
-        }
-
-        for handle in handles {
-            handle.join().unwrap();
-        }
-
-        assert_eq!(
-            rb.card.load(SeqCst),
-            rb.ring
-                .iter()
-                .map(|b| to_int(b.load(SeqCst)))
-                .fold(0, |acc, i| acc + i)
-        );
-        assert_eq!((8 * 100 * 3) % 7, rb.index.load(SeqCst));
-    }
-
-    #[test]
     fn recloser_correctness() {
-        let recl = Recloser::new(AnyError, 0.5, 2, 2, Duration::from_secs(1));
+        let recl = Recloser::of(AnyError)
+            .error_rate(0.5)
+            .closed_len(2)
+            .half_open_len(2)
+            .open_wait(Duration::from_secs(1))
+            .build();
+
         let guard = &epoch::pin();
 
         // Fill the State::Closed ring buffer
@@ -325,7 +285,14 @@ mod tests {
 
     #[test]
     fn recloser_concurrent() {
-        let recl = Arc::new(Recloser::new(AnyError, 0.5, 10, 5, Duration::from_secs(1)));
+        let recl = Arc::new(
+            Recloser::of(AnyError)
+                .error_rate(0.5)
+                .closed_len(10)
+                .half_open_len(5)
+                .open_wait(Duration::from_secs(1))
+                .build(),
+        );
 
         let mut handles = Vec::with_capacity(8);
         let barrier = Arc::new(Barrier::new(8));
