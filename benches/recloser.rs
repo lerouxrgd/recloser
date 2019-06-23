@@ -31,14 +31,10 @@ fn make_recloser<E>() -> Recloser<AnyError, E> {
         .build()
 }
 
-fn make_failsafe() -> failsafe::StateMachine<
-    failure_policy::OrElse<
-        failure_policy::SuccessRateOverTimeWindow<backoff::EqualJittered>,
-        failure_policy::ConsecutiveFailures<backoff::EqualJittered>,
-    >,
-    (),
-> {
-    Config::new().build()
+fn make_failsafe() -> impl CircuitBreaker {
+    let backoff = backoff::constant(Duration::from_secs(1));
+    let policy = failure_policy::consecutive_failures(1, backoff);
+    Config::new().failure_policy(policy).build()
 }
 
 fn recloser_simple() {
