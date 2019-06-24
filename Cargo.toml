@@ -9,6 +9,11 @@ readme = "README.md"
 
 [dependencies]
 crossbeam = "0.7"
+futures = { version = "0.1" }
+# futures = { version = "0.1", optional = true }
+
+# [features]
+# async = ["futures"]
 
 [dev-dependencies]
 criterion = "0.2"

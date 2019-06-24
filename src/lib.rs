@@ -1,3 +1,5 @@
+// #![cfg(feature = "async")]
+mod r#async;
 mod ring_buffer;
 
 #[cfg(test)]
