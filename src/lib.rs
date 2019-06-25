@@ -1,5 +1,6 @@
 // #![cfg(feature = "async")]
 mod r#async;
+mod error;
 mod ring_buffer;
 
 #[cfg(test)]
@@ -12,35 +13,8 @@ use std::time::Duration;
 
 use crossbeam::epoch::{self as epoch, Atomic, Guard, Owned};
 
+use crate::error::{AnyError, Error, ErrorPredicate};
 use crate::ring_buffer::RingBuffer;
-
-#[derive(Debug)]
-pub enum Error<E> {
-    Inner(E),
-    Rejected,
-}
-
-pub trait ErrorPredicate<E> {
-    fn is_err(&self, err: &E) -> bool;
-}
-
-impl<F, E> ErrorPredicate<E> for F
-where
-    F: Fn(&E) -> bool,
-{
-    fn is_err(&self, err: &E) -> bool {
-        self(err)
-    }
-}
-
-#[derive(Debug)]
-pub struct AnyError;
-
-impl<E> ErrorPredicate<E> for AnyError {
-    fn is_err(&self, _err: &E) -> bool {
-        true
-    }
-}
 
 #[derive(Debug)]
 pub struct Recloser<P, E>

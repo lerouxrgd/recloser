@@ -1,5 +1,7 @@
-use crate::{Error, ErrorPredicate, Recloser};
 use futures::{Async, Future, Poll};
+
+use crate::error::{Error, ErrorPredicate};
+use crate::Recloser;
 
 pub trait CallAsync<F, P>
 where
