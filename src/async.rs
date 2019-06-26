@@ -1,42 +1,55 @@
+use std::sync::Arc;
+
 use crossbeam::epoch;
 use futures::{Async, Future, Poll};
 
-use crate::error::{Error, ErrorPredicate};
+use crate::error::{AnyError, Error, ErrorPredicate};
 use crate::recloser::Recloser;
 
-pub trait CallAsync<F, P>
-where
-    F: Future,
-    P: ErrorPredicate<F::Error>,
-{
-    fn call_async(&self, f: F) -> RecloserFuture<F, P>;
+pub struct AsyncRecloser {
+    inner: Arc<Recloser>,
 }
 
-impl<F, P> CallAsync<F, P> for Recloser<P, F::Error>
-where
-    F: Future,
-    P: ErrorPredicate<F::Error>,
-{
-    fn call_async(&self, f: F) -> RecloserFuture<F, P> {
+impl AsyncRecloser {
+    pub fn from(recloser: Recloser) -> Self {
+        AsyncRecloser {
+            inner: Arc::new(recloser),
+        }
+    }
+
+    pub fn call<F>(&self, f: F) -> RecloserFuture<F, AnyError>
+    where
+        F: Future,
+    {
+        self.call_with(AnyError, f)
+    }
+
+    pub fn call_with<F, P>(&self, predicate: P, f: F) -> RecloserFuture<F, P>
+    where
+        P: ErrorPredicate<F::Error>,
+        F: Future,
+    {
+        let recloser = AsyncRecloser {
+            inner: self.inner.clone(),
+        };
+
         RecloserFuture {
+            recloser,
             future: f,
-            recloser: self,
+            predicate,
             checked: false,
         }
     }
 }
 
-pub struct RecloserFuture<'a, F, P>
-where
-    F: Future,
-    P: ErrorPredicate<F::Error>,
-{
+pub struct RecloserFuture<F, P> {
+    recloser: AsyncRecloser,
     future: F,
-    recloser: &'a Recloser<P, F::Error>,
+    predicate: P,
     checked: bool,
 }
 
-impl<'a, F, P> Future for RecloserFuture<'a, F, P>
+impl<F, P> Future for RecloserFuture<F, P>
 where
     F: Future,
     P: ErrorPredicate<F::Error>,
@@ -49,22 +62,22 @@ where
 
         if !self.checked {
             self.checked = true;
-            if !self.recloser.call_permitted(guard) {
+            if !self.recloser.inner.call_permitted(guard) {
                 return Err(Error::Rejected);
             }
         }
 
         match self.future.poll() {
             Ok(Async::Ready(ok)) => {
-                self.recloser.on_success(guard);
+                self.recloser.inner.on_success(guard);
                 Ok(Async::Ready(ok))
             }
             Ok(Async::NotReady) => Ok(Async::NotReady),
             Err(err) => {
-                if self.recloser.predicate.is_err(&err) {
-                    self.recloser.on_error(guard);
+                if self.predicate.is_err(&err) {
+                    self.recloser.inner.on_error(guard);
                 } else {
-                    self.recloser.on_success(guard);
+                    self.recloser.inner.on_success(guard);
                 }
                 Err(Error::Inner(err))
             }
@@ -74,29 +87,65 @@ where
 
 #[cfg(test)]
 mod tests {
-    use fake_clock::FakeClock;
+    use std::time::{Duration, Instant};
+
     use futures::future;
     use tokio::runtime::Runtime;
+    use tokio::timer::Delay;
 
     use super::*;
-
-    fn sleep(time: u64) {
-        FakeClock::advance_time(time);
-    }
 
     #[test]
     fn call_ok() {
         let mut runtime = Runtime::new().unwrap();
 
-        let recloser = Recloser::default();
+        let recloser = AsyncRecloser::from(Recloser::default());
 
         let future = future::lazy(|| Ok::<(), ()>(()));
-        let future = recloser.call_async(future);
+        let future = recloser.call(future);
 
-        sleep(1500);
         runtime.block_on(future).unwrap();
 
         let guard = &epoch::pin();
-        assert_eq!(true, recloser.call_permitted(guard));
+        assert_eq!(true, recloser.inner.call_permitted(guard));
+    }
+
+    #[test]
+    fn call_err() {
+        let mut runtime = Runtime::new().unwrap();
+
+        let recloser = Recloser::custom().closed_len(1).half_open_len(1).build();
+        let recloser = AsyncRecloser::from(recloser);
+
+        let future = future::lazy(|| Err::<(), ()>(()));
+        let future = recloser.call(future);
+        match runtime.block_on(future) {
+            Err(Error::Inner(_)) => {}
+            err => unreachable!("{:?}", err),
+        }
+
+        let guard = &epoch::pin();
+        assert_eq!(true, recloser.inner.call_permitted(guard));
+
+        let future = future::lazy(|| Err::<(), ()>(()));
+        let future = recloser.call(future);
+        match runtime.block_on(future) {
+            Err(Error::Inner(_)) => {}
+            err => unreachable!("{:?}", err),
+        }
+
+        let guard = &epoch::pin();
+        assert_eq!(false, recloser.inner.call_permitted(guard));
+
+        let future = Delay::new(Instant::now() + Duration::from_millis(100));
+        let future = recloser.call(future);
+
+        match runtime.block_on(future) {
+            Err(Error::Rejected) => {}
+            err => unreachable!("{:?}", err),
+        }
+
+        let guard = &epoch::pin();
+        assert_eq!(false, recloser.inner.call_permitted(guard));
     }
 }

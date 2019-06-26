@@ -6,7 +6,7 @@ use num_cpus;
 use rayon::prelude::*;
 
 use failsafe::{backoff, failure_policy, CircuitBreaker, Config};
-use recloser::{AnyError, Recloser};
+use recloser::Recloser;
 
 const ITER_C: u64 = 10_000;
 
@@ -22,8 +22,8 @@ fn dangerous_call(n: u64) -> Result<u64, u64> {
     }
 }
 
-fn make_recloser<E>() -> Recloser<AnyError, E> {
-    Recloser::of(AnyError)
+fn make_recloser() -> Recloser {
+    Recloser::custom()
         .error_rate(0.01)
         .closed_len(10)
         .half_open_len(5)

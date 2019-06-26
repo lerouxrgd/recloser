@@ -12,30 +12,30 @@ use crate::error::{AnyError, Error, ErrorPredicate};
 use crate::ring_buffer::RingBuffer;
 
 #[derive(Debug)]
-pub struct Recloser<P, E>
-where
-    P: ErrorPredicate<E>,
-{
-    pub(crate) predicate: P,
+pub struct Recloser {
     threshold: f32,
     closed_len: usize,
     half_open_len: usize,
     open_wait: Duration,
     state: Atomic<State>,
-    marker: std::marker::PhantomData<E>,
 }
 
-impl<P, E> Recloser<P, E>
-where
-    P: ErrorPredicate<E>,
-{
-    pub fn of(error_predicate: P) -> RecloserBuilder<P, E> {
-        RecloserBuilder::new(error_predicate)
+impl Recloser {
+    pub fn custom() -> RecloserBuilder {
+        RecloserBuilder::new()
     }
 
-    pub fn call<F, R>(&self, f: F) -> Result<R, Error<E>>
+    pub fn call<F, T, E>(&self, f: F) -> Result<T, Error<E>>
     where
-        F: FnOnce() -> Result<R, E>,
+        F: FnOnce() -> Result<T, E>,
+    {
+        self.call_with(AnyError, f)
+    }
+
+    pub fn call_with<P, F, T, E>(&self, predicate: P, f: F) -> Result<T, Error<E>>
+    where
+        P: ErrorPredicate<E>,
+        F: FnOnce() -> Result<T, E>,
     {
         let guard = &epoch::pin();
 
@@ -49,7 +49,7 @@ where
                 Ok(ok)
             }
             Err(err) => {
-                if self.predicate.is_err(&err) {
+                if predicate.is_err(&err) {
                     self.on_error(guard);
                 } else {
                     self.on_success(guard);
@@ -122,30 +122,20 @@ enum State {
 }
 
 #[derive(Debug)]
-pub struct RecloserBuilder<P, E>
-where
-    P: ErrorPredicate<E>,
-{
-    predicate: P,
+pub struct RecloserBuilder {
     threshold: f32,
     closed_len: usize,
     half_open_len: usize,
     open_wait: Duration,
-    marker: std::marker::PhantomData<E>,
 }
 
-impl<P, E> RecloserBuilder<P, E>
-where
-    P: ErrorPredicate<E>,
-{
-    fn new(predicate: P) -> Self {
+impl RecloserBuilder {
+    fn new() -> Self {
         RecloserBuilder {
-            predicate,
             threshold: 0.5,
             closed_len: 100,
             half_open_len: 10,
             open_wait: Duration::from_secs(30),
-            marker: std::marker::PhantomData,
         }
     }
 
@@ -169,22 +159,20 @@ where
         self
     }
 
-    pub fn build(self) -> Recloser<P, E> {
+    pub fn build(self) -> Recloser {
         Recloser {
-            predicate: self.predicate,
             threshold: self.threshold,
             closed_len: self.closed_len,
             half_open_len: self.half_open_len,
             open_wait: self.open_wait,
             state: Atomic::new(State::Closed(RingBuffer::new(self.closed_len))),
-            marker: std::marker::PhantomData,
         }
     }
 }
 
-impl<E> Default for Recloser<AnyError, E> {
+impl Default for Recloser {
     fn default() -> Self {
-        Recloser::of(AnyError).build()
+        Recloser::custom().build()
     }
 }
 
@@ -204,8 +192,21 @@ mod tests {
     }
 
     #[test]
+    fn multi_error_types() {
+        let recl = Recloser::custom()
+            .error_rate(0.5)
+            .closed_len(2)
+            .half_open_len(2)
+            .open_wait(Duration::from_secs(1))
+            .build();
+
+        let _ = recl.call(|| Err::<(), ()>(()));
+        let _ = recl.call(|| Err::<usize, usize>(12));
+    }
+
+    #[test]
     fn recloser_correctness() {
-        let recl = Recloser::of(AnyError)
+        let recl = Recloser::custom()
             .error_rate(0.5)
             .closed_len(2)
             .half_open_len(2)
@@ -257,7 +258,7 @@ mod tests {
     #[test]
     fn recloser_concurrent() {
         let recl = Arc::new(
-            Recloser::of(AnyError)
+            Recloser::custom()
                 .error_rate(0.5)
                 .closed_len(10)
                 .half_open_len(5)
