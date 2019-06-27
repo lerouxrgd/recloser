@@ -87,65 +87,30 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::time::{Duration, Instant};
-
     use futures::future;
+    use matches::assert_matches;
     use tokio::runtime::Runtime;
-    use tokio::timer::Delay;
 
     use super::*;
 
     #[test]
-    fn call_ok() {
+    fn multi_futures_types() {
         let mut runtime = Runtime::new().unwrap();
-
-        let recloser = AsyncRecloser::from(Recloser::default());
-
-        let future = future::lazy(|| Ok::<(), ()>(()));
-        let future = recloser.call(future);
-
-        runtime.block_on(future).unwrap();
-
         let guard = &epoch::pin();
-        assert_eq!(true, recloser.inner.call_permitted(guard));
-    }
 
-    #[test]
-    fn call_err() {
-        let mut runtime = Runtime::new().unwrap();
-
-        let recloser = Recloser::custom().closed_len(1).half_open_len(1).build();
+        let recloser = Recloser::custom().closed_len(1).build();
         let recloser = AsyncRecloser::from(recloser);
 
         let future = future::lazy(|| Err::<(), ()>(()));
         let future = recloser.call(future);
-        match runtime.block_on(future) {
-            Err(Error::Inner(_)) => {}
-            err => unreachable!("{:?}", err),
-        }
 
-        let guard = &epoch::pin();
+        assert_matches!(runtime.block_on(future), Err(Error::Inner(_)));
         assert_eq!(true, recloser.inner.call_permitted(guard));
 
-        let future = future::lazy(|| Err::<(), ()>(()));
-        let future = recloser.call(future);
-        match runtime.block_on(future) {
-            Err(Error::Inner(_)) => {}
-            err => unreachable!("{:?}", err),
-        }
-
-        let guard = &epoch::pin();
-        assert_eq!(false, recloser.inner.call_permitted(guard));
-
-        let future = Delay::new(Instant::now() + Duration::from_millis(100));
+        let future = future::lazy(|| Err::<usize, usize>(12));
         let future = recloser.call(future);
 
-        match runtime.block_on(future) {
-            Err(Error::Rejected) => {}
-            err => unreachable!("{:?}", err),
-        }
-
-        let guard = &epoch::pin();
+        assert_matches!(runtime.block_on(future), Err(Error::Inner(_)));
         assert_eq!(false, recloser.inner.call_permitted(guard));
     }
 }
