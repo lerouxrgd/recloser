@@ -26,8 +26,8 @@ impl AsyncRecloser {
 
     pub fn call_with<F, P>(&self, predicate: P, f: F) -> RecloserFuture<F, P>
     where
-        P: ErrorPredicate<F::Error>,
         F: Future,
+        P: ErrorPredicate<F::Error>,
     {
         let recloser = AsyncRecloser {
             inner: self.inner.clone(),
@@ -94,23 +94,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn multi_futures_types() {
+    fn multi_futures() {
         let mut runtime = Runtime::new().unwrap();
         let guard = &epoch::pin();
 
-        let recloser = Recloser::custom().closed_len(1).build();
-        let recloser = AsyncRecloser::from(recloser);
+        let recl = Recloser::custom().closed_len(1).build();
+        let recl = AsyncRecloser::from(recl);
 
         let future = future::lazy(|| Err::<(), ()>(()));
-        let future = recloser.call(future);
+        let future = recl.call(future);
 
-        assert_matches!(runtime.block_on(future), Err(Error::Inner(_)));
-        assert_eq!(true, recloser.inner.call_permitted(guard));
+        assert_matches!(runtime.block_on(future), Err(Error::Inner(())));
+        assert_eq!(true, recl.inner.call_permitted(guard));
 
         let future = future::lazy(|| Err::<usize, usize>(12));
-        let future = recloser.call(future);
+        let future = recl.call(future);
 
-        assert_matches!(runtime.block_on(future), Err(Error::Inner(_)));
-        assert_eq!(false, recloser.inner.call_permitted(guard));
+        assert_matches!(runtime.block_on(future), Err(Error::Inner(12)));
+        assert_eq!(false, recl.inner.call_permitted(guard));
     }
 }

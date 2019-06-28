@@ -192,16 +192,17 @@ mod tests {
     }
 
     #[test]
-    fn multi_error_types() {
-        let recl = Recloser::custom()
-            .error_rate(0.5)
-            .closed_len(2)
-            .half_open_len(2)
-            .open_wait(Duration::from_secs(1))
-            .build();
+    fn multi_errors() {
+        let recl = Recloser::custom().closed_len(1).build();
+        let guard = &epoch::pin();
 
-        let _ = recl.call(|| Err::<(), ()>(()));
-        let _ = recl.call(|| Err::<usize, usize>(12));
+        let f = || Err::<(), ()>(());
+        assert_matches!(recl.call(f), Err(Error::Inner(())));
+        assert_eq!(true, recl.call_permitted(guard));
+
+        let f = || Err::<(), usize>(12);
+        assert_matches!(recl.call(f), Err(Error::Inner(12)));
+        assert_eq!(false, recl.call_permitted(guard));
     }
 
     #[test]
