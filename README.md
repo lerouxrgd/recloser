@@ -1,21 +1,15 @@
 # recloser
 
 A concurrent [circuit breaker][cb] implemented with ring buffers.
-The API is based on [failsafe][] and the implementation is based on [resilient4j][].
+
+The API is based on [failsafe][] and the ring buffer implementation on [resilient4j][].
 
 ## Usage
 
-``` rust
-use recloser::Recloser;
-
-// Equivalent to Recloser::default()
-let recloser = Recloser::custom()
-    .error_rate(0.5)
-    .closed_len(100)
-    .half_open_len(10)
-    .open_wait(Duration::from_secs(30))
-    .build();
-```
+The `Recloser` is parameterized with a `failure_rate` and can be in three states:
+ - `Closed(RingBuffer(len))`: This is the inital `Recloser`'s state,
+ - `HalfOpen(RingBuffer(len))`:
+ - `Open(until)`:
 
 ## Performances
 
