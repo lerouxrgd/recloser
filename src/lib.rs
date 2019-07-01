@@ -18,17 +18,27 @@
 //! Wrapping function calls that may fail:
 //!
 //! ``` rust
-//! # use matches::assert_matches;
+//! use matches::assert_matches;
 //! use recloser::{Recloser, Error};
 //!
-//! //
+//! // Performs 1 call before calculating failure_rate
 //! let recloser = Recloser::custom().closed_len(1).build();
 //!
-//! let func = || Err::<(), usize>(1);
-//! let res = recloser.call(func);
-//! assert_matches!(res, Err(Error::Inner(1)))
-//! // Err(Error::Rejected)
+//! let f1 = || Err::<(), usize>(1);
+//!
+//! let res = recloser.call(f1);
+//! assert_matches!(res, Err(Error::Inner(1))); // First call
+//!
+//! let res = recloser.call(f1);
+//! assert_matches!(res, Err(Error::Inner(1))); // Calculates failure_rate, that is 100%
+//!
+//! let f2 = || Err::<(), i64>(-1);
+//!
+//! let res = recloser.call(f2);
+//! assert_matches!(res, Err(Error::Rejected)); // Rejects next calls (while in State::Open)
 //! ```
+//!
+//! Async calls:
 //!
 //! ``` rust
 //! use futures::future;

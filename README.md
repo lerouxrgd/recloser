@@ -1,10 +1,11 @@
 # recloser
 
 A concurrent [circuit breaker][cb] implemented with ring buffers.
+
 The `Recloser` struct provides a `call(...)` method to wrap function calls that may fail,
-will eagerly reject them when some `failure_rate` is reached, and will allow them again
-after some time.
-Future aware ``call(...)` is also available through an `r#async::AsyncRecloser` wrapper.
+it will eagerly reject them when some `failure_rate` is reached, and it will allow them
+again after some time.
+Future aware `call(...)` is also available through an `r#async::AsyncRecloser` wrapper.
 
 The API is based on [failsafe][] and the ring buffer implementation on [resilient4j][].
 
@@ -20,7 +21,7 @@ The `Recloser` can be in three states:
     calculating a `failure_rate` based on which transitions to either `Closed(_)` or
 	`Open(_)` states will happen.
 
-These transition behaviors can be customized as follows:
+These state transition settings can be customized as follows:
 
  ``` rust
 use std::time::Duration;
@@ -33,6 +34,29 @@ let recloser = Recloser::custom()
     .half_open_len(10)
     .open_wait(Duration::from_secs(30))
     .build();
+```
+
+Dangerous functions calls wrapping:
+
+``` rust
+use matches::assert_matches;
+use recloser::{Recloser, Error};
+
+// Performs 1 call before calculating failure_rate
+let recloser = Recloser::custom().closed_len(1).build();
+
+let f1 = || Err::<(), usize>(1);
+
+let res = recloser.call(f1);
+assert_matches!(res, Err(Error::Inner(1))); // First call
+
+let res = recloser.call(f1);
+assert_matches!(res, Err(Error::Inner(1))); // Calculates failure_rate, that is 100%
+
+let f2 = || Err::<(), i64>(-1);
+
+let res = recloser.call(f2);
+assert_matches!(res, Err(Error::Rejected)); // Rejects next calls (while in State::Open)
 ```
 
 ## Performances
