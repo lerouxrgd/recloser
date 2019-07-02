@@ -36,7 +36,7 @@ let recloser = Recloser::custom()
     .build();
 ```
 
-Wrap dangerous functions calls in order to control failure propagation:
+Wrapping dangerous functions calls in order to control failure propagation:
 
 ``` rust
 use matches::assert_matches;
@@ -50,7 +50,7 @@ let f1 = || Err::<(), usize>(1);
 let res = recloser.call(f1); // First call, just recorded as an error
 assert_matches!(res, Err(Error::Inner(1)));
 
-let res = recloser.call(f1); // Now calculates failure_rate, that is 100%, transitions into State::Open afterward
+let res = recloser.call(f1); // Now also computes failure_rate > 50%, transitions to State::Open afterward
 assert_matches!(res, Err(Error::Inner(1)));
 
 let f2 = || Err::<(), i64>(-1);
@@ -70,8 +70,21 @@ let recloser = Recloser::default();
 let f = || Err::<(), usize>(1);
 let p = |_: &usize| false;
 
-let res = recloser.call_with(p, f);
-assert_matches!(res, Err(Error::Inner(1))); // Not recorded as an error
+let res = recloser.call_with(p, f); // Not recorded as an error
+assert_matches!(res, Err(Error::Inner(1)));
+```
+
+Wrapping functions that return futures:
+
+``` rust
+use futures::future;
+use recloser::{Recloser, Error};
+use recloser::r#async::AsyncRecloser;
+
+let recloser = AsyncRecloser::from(Recloser::default());
+
+let future = future::lazy(|| Err::<(), usize>(1));
+let future = recloser.call(future);
 ```
 
 ## Performances
