@@ -5,7 +5,7 @@ A concurrent [circuit breaker][cb] implemented with ring buffers.
 The `Recloser` struct provides a `call(...)` method to wrap function calls that may fail,
 it will eagerly reject them when some `failure_rate` is reached, and it will allow them
 again after some time.
-Future aware `call(...)` is also available through an `r#async::AsyncRecloser` wrapper.
+Future aware `call(...)` is also available through an `async::AsyncRecloser` wrapper.
 
 The API is based on [failsafe][] and the ring buffer implementation on [resilient4j][].
 
@@ -21,7 +21,7 @@ The `Recloser` can be in three states:
     calculating a `failure_rate` based on which transitions to either `Closed(_)` or
 	`Open(_)` states will happen.
 
-These state transition settings can be customized as follows:
+The state transition settings can be customized as follows:
 
  ``` rust
 use std::time::Duration;
@@ -36,7 +36,7 @@ let recloser = Recloser::custom()
     .build();
 ```
 
-Dangerous functions calls wrapping:
+Wrap dangerous functions calls in order to control failure propagation:
 
 ``` rust
 use matches::assert_matches;
@@ -47,16 +47,31 @@ let recloser = Recloser::custom().closed_len(1).build();
 
 let f1 = || Err::<(), usize>(1);
 
-let res = recloser.call(f1);
-assert_matches!(res, Err(Error::Inner(1))); // First call
+let res = recloser.call(f1); // First call, just recorded as an error
+assert_matches!(res, Err(Error::Inner(1)));
 
-let res = recloser.call(f1);
-assert_matches!(res, Err(Error::Inner(1))); // Calculates failure_rate, that is 100%
+let res = recloser.call(f1); // Now calculates failure_rate, that is 100%, transitions into State::Open afterward
+assert_matches!(res, Err(Error::Inner(1)));
 
 let f2 = || Err::<(), i64>(-1);
 
-let res = recloser.call(f2);
-assert_matches!(res, Err(Error::Rejected)); // Rejects next calls (while in State::Open)
+let res = recloser.call(f2); // All calls are rejected (while in State::Open)
+assert_matches!(res, Err(Error::Rejected));
+```
+
+It is also possible to discard some errors on a per call basis:
+
+``` rust
+use matches::assert_matches;
+use recloser::{Recloser, Error};
+
+let recloser = Recloser::default();
+
+let f = || Err::<(), usize>(1);
+let p = |_: &usize| false;
+
+let res = recloser.call_with(p, f);
+assert_matches!(res, Err(Error::Inner(1))); // Not recorded as an error
 ```
 
 ## Performances

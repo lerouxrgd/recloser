@@ -38,6 +38,21 @@
 //! assert_matches!(res, Err(Error::Rejected)); // Rejects next calls (while in State::Open)
 //! ```
 //!
+//! Custom error predicate:
+//!
+//! ``` rust
+//! use matches::assert_matches;
+//! use recloser::{Recloser, Error};
+//!
+//! let recloser = Recloser::default();
+//!
+//! let f = || Err::<(), usize>(1);
+//! let p = |_: &usize| false;
+//!
+//! let res = recloser.call_with(p, f);
+//! assert_matches!(res, Err(Error::Inner(1))); // Not recorded as an error
+//! ```
+//!
 //! Async calls:
 //!
 //! ``` rust

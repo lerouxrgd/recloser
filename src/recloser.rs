@@ -206,6 +206,21 @@ mod tests {
     }
 
     #[test]
+    fn error_predicate() {
+        let recl = Recloser::custom().closed_len(1).build();
+        let guard = &epoch::pin();
+
+        let f = || Err::<(), ()>(());
+        let p = |_: &()| false;
+
+        assert_matches!(recl.call_with(p, f), Err(Error::Inner(())));
+        assert_eq!(true, recl.call_permitted(guard));
+
+        assert_matches!(recl.call_with(p, f), Err(Error::Inner(())));
+        assert_eq!(true, recl.call_permitted(guard));
+    }
+
+    #[test]
     fn recloser_correctness() {
         let recl = Recloser::custom()
             .error_rate(0.5)
