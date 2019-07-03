@@ -47,15 +47,19 @@
 //!
 //! let f1 = || Err::<(), usize>(1);
 //!
-//! let res = recloser.call(f1); // First call, just recorded as an error
+//! // First call, just recorded as an error
+//! let res = recloser.call(f1);
 //! assert_matches!(res, Err(Error::Inner(1)));
 //!
-//! let res = recloser.call(f1); // Now also computes failure_rate > 50%, transitions to State::Open afterward
+//! // Now also computes failure_rate, that is 100% here
+//! // Will transition to State::Open afterward
+//! let res = recloser.call(f1);
 //! assert_matches!(res, Err(Error::Inner(1)));
 //!
 //! let f2 = || Err::<(), i64>(-1);
 //!
-//! let res = recloser.call(f2); // All calls are rejected (while in State::Open)
+//! // All calls are rejected (while in State::Open)
+//! let res = recloser.call(f2);
 //! assert_matches!(res, Err(Error::Rejected));
 //! ```
 //!
@@ -70,9 +74,12 @@
 //! let recloser = Recloser::default();
 //!
 //! let f = || Err::<(), usize>(1);
-//! let p = |_: &usize| false; // Custom predicate that doesn't consider usize values as errors
 //!
-//! let res = recloser.call_with(p, f); // Will not record resulting Err(1) as an error
+//! // Custom predicate that doesn't consider usize values as errors
+//! let p = |_: &usize| false;
+//!
+//! // Will not record resulting Err(1) as an error
+//! let res = recloser.call_with(p, f);
 //! assert_matches!(res, Err(Error::Inner(1)));
 //! ```
 //!
