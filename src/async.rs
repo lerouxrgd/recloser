@@ -6,6 +6,7 @@ use futures::{Async, Future, Poll};
 use crate::error::{AnyError, Error, ErrorPredicate};
 use crate::recloser::Recloser;
 
+/// Provides future aware method on top of a regular `Recloser`.
 pub struct AsyncRecloser {
     inner: Arc<Recloser>,
 }
@@ -17,6 +18,7 @@ impl AsyncRecloser {
         }
     }
 
+    /// Same as `Recloser::call(...)` but with `Future`.
     pub fn call<F>(&self, f: F) -> RecloserFuture<F, AnyError>
     where
         F: Future,
@@ -24,6 +26,7 @@ impl AsyncRecloser {
         self.call_with(AnyError, f)
     }
 
+    /// Same as `Recloser::call_with(...)` but with `Future`.
     pub fn call_with<F, P>(&self, predicate: P, f: F) -> RecloserFuture<F, P>
     where
         F: Future,
@@ -42,6 +45,7 @@ impl AsyncRecloser {
     }
 }
 
+/// Custom `Future` returned by `AsyncRecloser` wrapped future calls.
 pub struct RecloserFuture<F, P> {
     recloser: AsyncRecloser,
     future: F,

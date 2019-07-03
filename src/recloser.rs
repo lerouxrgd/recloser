@@ -11,6 +11,8 @@ use crossbeam::epoch::{self, Atomic, Guard, Owned};
 use crate::error::{AnyError, Error, ErrorPredicate};
 use crate::ring_buffer::RingBuffer;
 
+/// A concurrent cirbuit breaker implemented with `RingBuffer`s.
+/// Allows or rejects calls depending on the state it is in.
 #[derive(Debug)]
 pub struct Recloser {
     threshold: f32,
@@ -21,10 +23,14 @@ pub struct Recloser {
 }
 
 impl Recloser {
+    /// Returns a builder to create a customized `Recloser`.
     pub fn custom() -> RecloserBuilder {
         RecloserBuilder::new()
     }
 
+    /// Wraps a function that may fail, records the result as success or failure.
+    /// Uses default `AnyError` predicate that considers any `Err(_)` as a failure.
+    /// Based on the result, state transition may happen.
     pub fn call<F, T, E>(&self, f: F) -> Result<T, Error<E>>
     where
         F: FnOnce() -> Result<T, E>,
@@ -32,6 +38,9 @@ impl Recloser {
         self.call_with(AnyError, f)
     }
 
+    /// Wraps a function that may fail, the custom `predicate` will be used to
+    /// determine whether the result was a success or failure.
+    /// Based on the result, state transition may happen.
     pub fn call_with<P, F, T, E>(&self, predicate: P, f: F) -> Result<T, Error<E>>
     where
         P: ErrorPredicate<E>,
@@ -60,6 +69,7 @@ impl Recloser {
     }
 
     pub(crate) fn call_permitted(&self, guard: &Guard) -> bool {
+        // safe because `Shared::null()` is never used.
         match unsafe { self.state.load(SeqCst, guard).deref() } {
             State::Closed(_) => true,
             State::HalfOpen(_) => true,
@@ -79,6 +89,7 @@ impl Recloser {
     }
 
     pub(crate) fn on_success(&self, guard: &Guard) {
+        // safe because `Shared::null()` is never used.
         match unsafe { self.state.load(SeqCst, guard).deref() } {
             State::Closed(rb) => {
                 rb.set_current(false);
@@ -98,6 +109,7 @@ impl Recloser {
     }
 
     pub(crate) fn on_error(&self, guard: &Guard) {
+        // safe because `Shared::null()` is never used.
         match unsafe { self.state.load(SeqCst, guard).deref() } {
             State::Closed(rb) | State::HalfOpen(rb) => {
                 let failure_rate = rb.set_current(true);
@@ -114,13 +126,19 @@ impl Recloser {
     }
 }
 
+/// The states a `Recloser` can be in.
 #[derive(Debug)]
 enum State {
-    Open(Instant),
-    HalfOpen(RingBuffer),
+    /// Allows calls until a failure_rate threshold is reached.
     Closed(RingBuffer),
+    /// Rejects all calls until the future `Instant` is reached.
+    Open(Instant),
+    /// Allows calls until the underlying `RingBuffer` is full,
+    /// then calculates a failure_rate based on which the next transition will happen.
+    HalfOpen(RingBuffer),
 }
 
+/// A helper struct to build customized `Recloser`.
 #[derive(Debug)]
 pub struct RecloserBuilder {
     threshold: f32,

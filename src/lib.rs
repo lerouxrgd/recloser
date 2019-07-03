@@ -5,9 +5,9 @@
 //! The `Recloser` struct provides a `call(...)` method to wrap function calls that may fail,
 //! it will eagerly reject them when some `failure_rate` is reached, and it will allow them
 //! again after some time.
-//! Future aware `call(...)` is also available through an `async::AsyncRecloser` wrapper.
+//! A future aware version of `call(...)` is also available through an `async::AsyncRecloser` wrapper.
 //!
-//! The API is based on [failsafe][] and the ring buffer implementation on [resilient4j][].
+//! The API is largely based on [failsafe][] and the ring buffer implementation on [resilient4j][].
 //!
 //! ## Usage
 //!
@@ -36,7 +36,7 @@
 //!     .build();
 //! ```
 //!
-//! Wrapping dangerous functions calls in order to control failure propagation:
+//! Wrapping dangerous function calls in order to control failure propagation:
 //!
 //! ``` rust
 //! use matches::assert_matches;
@@ -59,7 +59,9 @@
 //! assert_matches!(res, Err(Error::Rejected));
 //! ```
 //!
-//! It is also possible to discard some errors on a per call basis:
+//! It is also possible to discard some errors on a per call basis.
+//! This behavior is controlled by the `ErrorPredicate<E>`trait, which is already
+//! implemented for all `Fn(&E) -> bool`.
 //!
 //! ``` rust
 //! use matches::assert_matches;
@@ -68,13 +70,14 @@
 //! let recloser = Recloser::default();
 //!
 //! let f = || Err::<(), usize>(1);
-//! let p = |_: &usize| false;
+//! let p = |_: &usize| false; // Custom predicate that doesn't consider usize values as errors
 //!
-//! let res = recloser.call_with(p, f); // Not recorded as an error
+//! let res = recloser.call_with(p, f); // Will not record resulting Err(1) as an error
 //! assert_matches!(res, Err(Error::Inner(1)));
 //! ```
 //!
-//! Wrapping functions that return futures:
+//! Wrapping functions that return `Future`s requires to use an `AsyncRecloser` that just
+//! wraps a regular `Recloser`.
 //!
 //! ``` rust
 //! use futures::future;
@@ -86,6 +89,10 @@
 //! let future = future::lazy(|| Err::<(), usize>(1));
 //! let future = recloser.call(future);
 //! ```
+//!
+//! [cb]: https://martinfowler.com/bliki/CircuitBreaker.html
+//! [failsafe]: https://github.com/dmexe/failsafe-rs
+//! [resilient4j]: https://resilience4j.readme.io/docs/circuitbreaker
 
 mod error;
 mod recloser;

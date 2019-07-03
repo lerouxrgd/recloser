@@ -1,9 +1,14 @@
+/// Error returned by `Recloser` wrapped function calls.
 #[derive(Debug)]
 pub enum Error<E> {
+    /// Returned when got an `Err(e)` while performing a wrapped function call
+    /// in `Closed(_)` or `HalfOpen(_)` state.
     Inner(E),
+    /// Directly returned when in `Open(_)` state.
     Rejected,
 }
 
+/// A trait used to determine whether an `E` should be considered as a failure.
 pub trait ErrorPredicate<E> {
     fn is_err(&self, err: &E) -> bool;
 }
@@ -17,6 +22,7 @@ where
     }
 }
 
+/// Considers any value as a failure.
 #[derive(Debug)]
 pub struct AnyError;
 

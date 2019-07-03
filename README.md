@@ -5,9 +5,9 @@ A concurrent [circuit breaker][cb] implemented with ring buffers.
 The `Recloser` struct provides a `call(...)` method to wrap function calls that may fail,
 it will eagerly reject them when some `failure_rate` is reached, and it will allow them
 again after some time.
-Future aware `call(...)` is also available through an `async::AsyncRecloser` wrapper.
+A future aware version of `call(...)` is also available through an `async::AsyncRecloser` wrapper.
 
-The API is based on [failsafe][] and the ring buffer implementation on [resilient4j][].
+The API is largely based on [failsafe][] and the ring buffer implementation on [resilient4j][].
 
 ## Usage
 
@@ -36,7 +36,7 @@ let recloser = Recloser::custom()
     .build();
 ```
 
-Wrapping dangerous functions calls in order to control failure propagation:
+Wrapping dangerous function calls in order to control failure propagation:
 
 ``` rust
 use matches::assert_matches;
@@ -59,7 +59,9 @@ let res = recloser.call(f2); // All calls are rejected (while in State::Open)
 assert_matches!(res, Err(Error::Rejected));
 ```
 
-It is also possible to discard some errors on a per call basis:
+It is also possible to discard some errors on a per call basis.
+This behavior is controlled by the `ErrorPredicate<E>`trait, which is already
+implemented for all `Fn(&E) -> bool`.
 
 ``` rust
 use matches::assert_matches;
@@ -68,13 +70,14 @@ use recloser::{Recloser, Error};
 let recloser = Recloser::default();
 
 let f = || Err::<(), usize>(1);
-let p = |_: &usize| false;
+let p = |_: &usize| false; // Custom predicate that doesn't consider usize values as errors
 
-let res = recloser.call_with(p, f); // Not recorded as an error
+let res = recloser.call_with(p, f); // Will not record resulting Err(1) as an error
 assert_matches!(res, Err(Error::Inner(1)));
 ```
 
-Wrapping functions that return futures:
+Wrapping functions that return `Future`s requires to use an `AsyncRecloser` that just
+wraps a regular `Recloser`.
 
 ``` rust
 use futures::future;
@@ -89,12 +92,18 @@ let future = recloser.call(future);
 
 ## Performances
 
+Benchmarks for `Recloser` and `failsafe::CircuitBreaker`:
+- Single threaded workload: same performances
+- Multi threaded workload: `Recolser` has **10x** better performances
+
 ```
 recloser_simple         time:   [386.22 us 388.11 us 390.15 us]
 failsafe_simple         time:   [365.50 us 366.43 us 367.40 us]
 recloser_concurrent     time:   [766.76 us 769.44 us 772.28 us]
 failsafe_concurrent     time:   [9.4803 ms 9.5046 ms 9.5294 ms]
 ```
+
+These benchmarks were run on a `Intel Core i7-6700HQ @ 8x 3.5GHz` CPU.
 
 [cb]: https://martinfowler.com/bliki/CircuitBreaker.html
 [failsafe]: https://github.com/dmexe/failsafe-rs

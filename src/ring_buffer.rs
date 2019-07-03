@@ -5,7 +5,9 @@ use std::sync::atomic::{
 
 use crossbeam::utils::Backoff;
 
-/// A `true` value represents a call that failed
+/// Records successful and failed calls, calculates failure rate.
+/// A `true` value in the ring represents a call that failed.
+/// Therefore the failure rate is the ratio: card/len.
 #[derive(Debug)]
 pub struct RingBuffer {
     spin_lock: AtomicBool,
