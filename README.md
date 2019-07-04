@@ -105,7 +105,7 @@ let future = recloser.call(future);
 
 Benchmarks for `Recloser` and `failsafe::CircuitBreaker`
 - Single threaded workload: same performances
-- Multi threaded workload: `Recolser` has **10x** better performances
+- Multi threaded workload: `Recloser` has **10x** better performances
 
 ```
 recloser_simple         time:   [386.22 us 388.11 us 390.15 us]
