@@ -93,7 +93,7 @@
 //!
 //! let recloser = AsyncRecloser::from(Recloser::default());
 //!
-//! let future = future::lazy(|| Err::<(), usize>(1));
+//! let future = future::lazy(|_| Err::<(), usize>(1));
 //! let future = recloser.call(future);
 //! ```
 //!

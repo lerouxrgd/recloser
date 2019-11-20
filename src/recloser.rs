@@ -11,8 +11,8 @@ use crossbeam::epoch::{self, Atomic, Guard, Owned};
 use crate::error::{AnyError, Error, ErrorPredicate};
 use crate::ring_buffer::RingBuffer;
 
-/// A concurrent cirbuit breaker implemented with `RingBuffer`s.
-/// Allows or rejects calls depending on the state it is in.
+/// A concurrent cirbuit breaker based on `RingBuffer`s that allows or rejects
+/// calls depending on the state it is in.
 #[derive(Debug)]
 pub struct Recloser {
     threshold: f32,

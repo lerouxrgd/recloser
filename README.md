@@ -3,6 +3,7 @@
 [![Crates.io](https://img.shields.io/crates/v/recloser.svg)](https://crates.io/crates/recloser)
 [![Docs](https://docs.rs/recloser/badge.svg)](https://docs.rs/recloser)
 [![MIT licensed](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/lerouxrgd/recloser/blob/master/LICENSE)
+[![Rustc Version 1.36+](https://img.shields.io/badge/rustc-1.36+-lightgray.svg)](https://blog.rust-lang.org/2019/07/04/Rust-1.36.0.html)
 
 A concurrent [circuit breaker][cb] implemented with ring buffers.
 
@@ -97,7 +98,7 @@ use recloser::r#async::AsyncRecloser;
 
 let recloser = AsyncRecloser::from(Recloser::default());
 
-let future = future::lazy(|| Err::<(), usize>(1));
+let future = future::lazy(|_| Err::<(), usize>(1));
 let future = recloser.call(future);
 ```
 
@@ -118,4 +119,4 @@ These benchmarks were run on a `Intel Core i7-6700HQ @ 8x 3.5GHz` CPU.
 
 [cb]: https://martinfowler.com/bliki/CircuitBreaker.html
 [failsafe]: https://github.com/dmexe/failsafe-rs
-[resilient4j]: https://resilience4j.readme.io/docs/circuitbreaker 
+[resilient4j]: https://resilience4j.readme.io/docs/circuitbreaker
