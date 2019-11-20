@@ -96,7 +96,7 @@ impl Recloser {
             }
             State::HalfOpen(rb) => {
                 let failure_rate = rb.set_current(false);
-                if failure_rate != -1.0 && failure_rate <= self.threshold {
+                if failure_rate > -1.0 && failure_rate <= self.threshold {
                     self.state.swap(
                         Owned::new(State::Closed(RingBuffer::new(self.closed_len))),
                         SeqCst,
@@ -113,7 +113,7 @@ impl Recloser {
         match unsafe { self.state.load(SeqCst, guard).deref() } {
             State::Closed(rb) | State::HalfOpen(rb) => {
                 let failure_rate = rb.set_current(true);
-                if failure_rate != -1.0 && failure_rate >= self.threshold {
+                if failure_rate > -1.0 && failure_rate >= self.threshold {
                     self.state.swap(
                         Owned::new(State::Open(Instant::now() + self.open_wait)),
                         SeqCst,

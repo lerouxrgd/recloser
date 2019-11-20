@@ -28,7 +28,7 @@ impl RingBuffer {
 
         RingBuffer {
             spin_lock: AtomicBool::new(false),
-            len: len,
+            len,
             card: AtomicUsize::new(0),
             filling: AtomicUsize::new(0),
             ring: buf.into_boxed_slice(),
@@ -67,9 +67,10 @@ impl RingBuffer {
 }
 
 fn to_int(b: bool) -> usize {
-    match b {
-        true => 1,
-        false => 0,
+    if b {
+        1
+    } else {
+        0
     }
 }
 
