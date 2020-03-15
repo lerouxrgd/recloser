@@ -28,7 +28,7 @@ The `Recloser` can be in three states:
 
 The state transition settings can be customized as follows:
 
- ``` rust
+ ```rust
 use std::time::Duration;
 use recloser::Recloser;
 
@@ -43,7 +43,7 @@ let recloser = Recloser::custom()
 
 Wrapping dangerous function calls in order to control failure propagation:
 
-``` rust
+```rust
 use matches::assert_matches;
 use recloser::{Recloser, Error};
 
@@ -72,7 +72,7 @@ It is also possible to discard some errors on a per call basis.
 This behavior is controlled by the `ErrorPredicate<E>`trait, which is already
 implemented for all `Fn(&E) -> bool`.
 
-``` rust
+```rust
 use matches::assert_matches;
 use recloser::{Recloser, Error};
 
@@ -91,7 +91,7 @@ assert_matches!(res, Err(Error::Inner(1)));
 Wrapping functions that return `Future`s requires to use an `AsyncRecloser` that just
 wraps a regular `Recloser`.
 
-``` rust
+```rust
 use futures::future;
 use recloser::{Recloser, Error};
 use recloser::r#async::AsyncRecloser;
@@ -108,7 +108,7 @@ Benchmarks for `Recloser` and `failsafe::CircuitBreaker`
 - Single threaded workload: same performances
 - Multi threaded workload: `Recloser` has **10x** better performances
 
-```
+```sh
 recloser_simple         time:   [386.22 us 388.11 us 390.15 us]
 failsafe_simple         time:   [365.50 us 366.43 us 367.40 us]
 recloser_concurrent     time:   [766.76 us 769.44 us 772.28 us]

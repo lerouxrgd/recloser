@@ -109,3 +109,9 @@ pub mod r#async;
 
 pub use crate::error::{AnyError, Error, ErrorPredicate};
 pub use crate::recloser::{Recloser, RecloserBuilder};
+
+#[cfg(doctest)]
+mod doctests {
+    use doc_comment::doctest;
+    doctest!("../README.md");
+}
