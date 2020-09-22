@@ -5,7 +5,7 @@
 //! The `Recloser` struct provides a `call(...)` method to wrap function calls that may fail,
 //! it will eagerly reject them when some `failure_rate` is reached, and it will allow them
 //! again after some time.
-//! A future aware version of `call(...)` is also available through an `async::AsyncRecloser` wrapper.
+//! A future aware version of `call(...)` is also available through an `AsyncRecloser` wrapper.
 //!
 //! The API is largely based on [failsafe][] and the ring buffer implementation on [resilient4j][].
 //!
@@ -39,7 +39,6 @@
 //! Wrapping dangerous function calls in order to control failure propagation:
 //!
 //! ``` rust
-//! use matches::assert_matches;
 //! use recloser::{Recloser, Error};
 //!
 //! // Performs 1 call before calculating failure_rate
@@ -49,18 +48,18 @@
 //!
 //! // First call, just recorded as an error
 //! let res = recloser.call(f1);
-//! assert_matches!(res, Err(Error::Inner(1)));
+//! assert!(matches!(res, Err(Error::Inner(1))));
 //!
 //! // Now also computes failure_rate, that is 100% here
 //! // Will transition to State::Open afterward
 //! let res = recloser.call(f1);
-//! assert_matches!(res, Err(Error::Inner(1)));
+//! assert!(matches!(res, Err(Error::Inner(1))));
 //!
 //! let f2 = || Err::<(), i64>(-1);
 //!
 //! // All calls are rejected (while in State::Open)
 //! let res = recloser.call(f2);
-//! assert_matches!(res, Err(Error::Rejected));
+//! assert!(matches!(res, Err(Error::Rejected)));
 //! ```
 //!
 //! It is also possible to discard some errors on a per call basis.
@@ -68,7 +67,6 @@
 //! implemented for all `Fn(&E) -> bool`.
 //!
 //! ``` rust
-//! use matches::assert_matches;
 //! use recloser::{Recloser, Error};
 //!
 //! let recloser = Recloser::default();
@@ -80,7 +78,7 @@
 //!
 //! // Will not record resulting Err(1) as an error
 //! let res = recloser.call_with(p, f);
-//! assert_matches!(res, Err(Error::Inner(1)));
+//! assert!(matches!(res, Err(Error::Inner(1))));
 //! ```
 //!
 //! Wrapping functions that return `Future`s requires to use an `AsyncRecloser` that just
@@ -88,8 +86,7 @@
 //!
 //! ``` rust
 //! use futures::future;
-//! use recloser::{Recloser, Error};
-//! use recloser::r#async::AsyncRecloser;
+//! use recloser::{Recloser, Error, AsyncRecloser};
 //!
 //! let recloser = AsyncRecloser::from(Recloser::default());
 //!
@@ -101,13 +98,13 @@
 //! [failsafe]: https://github.com/dmexe/failsafe-rs
 //! [resilient4j]: https://resilience4j.readme.io/docs/circuitbreaker
 
+mod r#async;
 mod error;
 mod recloser;
 mod ring_buffer;
 
-pub mod r#async;
-
 pub use crate::error::{AnyError, Error, ErrorPredicate};
+pub use crate::r#async::{AsyncRecloser, RecloserFuture};
 pub use crate::recloser::{Recloser, RecloserBuilder};
 
 #[cfg(doctest)]

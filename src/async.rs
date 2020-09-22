@@ -98,7 +98,6 @@ where
 mod tests {
     use async_std::task;
     use futures::future;
-    use matches::assert_matches;
 
     use super::*;
 
@@ -112,13 +111,13 @@ mod tests {
         let future = future::lazy(|_| Err::<(), ()>(()));
         let future = recloser.call(future);
 
-        assert_matches!(task::block_on(future), Err(Error::Inner(())));
+        assert!(matches!(task::block_on(future), Err(Error::Inner(()))));
         assert_eq!(true, recloser.inner.call_permitted(guard));
 
         let future = future::lazy(|_| Err::<usize, usize>(12));
         let future = recloser.call(future);
 
-        assert_matches!(task::block_on(future), Err(Error::Inner(12)));
+        assert!(matches!(task::block_on(future), Err(Error::Inner(12))));
         assert_eq!(false, recloser.inner.call_permitted(guard));
     }
 }

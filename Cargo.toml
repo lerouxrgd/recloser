@@ -1,6 +1,6 @@
 [package]
 name = "recloser"
-version = "0.2.0"
+version = "0.3.0"
 authors = ["Romain Leroux <romain@leroux.dev>"]
 edition = "2018"
 description = "A concurrent circuit breaker implemented with ring buffers"
@@ -13,16 +13,15 @@ crossbeam = "0.7"
 pin-project = "0.4"
 
 [dev-dependencies]
-async-std = "1.0"
+async-std = "1.6"
 criterion = "0.3"
 doc-comment = "0.3"
-failsafe = "0.3"
+failsafe = "1.0"
 fake_clock = "0.3"
 futures = "0.3"
-matches = "0.1"
-num_cpus = "1.11"
+num_cpus = "1.13"
 rand = "0.7"
-rayon = "1.2"
+rayon = "1.4"
 
 [[bench]]
 name = "recloser"

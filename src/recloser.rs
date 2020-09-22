@@ -200,7 +200,6 @@ mod tests {
     use std::thread;
 
     use fake_clock::FakeClock;
-    use matches::assert_matches;
     use rand::prelude::*;
 
     use super::*;
@@ -215,11 +214,11 @@ mod tests {
         let guard = &epoch::pin();
 
         let f = || Err::<(), ()>(());
-        assert_matches!(recl.call(f), Err(Error::Inner(())));
+        assert!(matches!(recl.call(f), Err(Error::Inner(()))));
         assert_eq!(true, recl.call_permitted(guard));
 
         let f = || Err::<(), usize>(12);
-        assert_matches!(recl.call(f), Err(Error::Inner(12)));
+        assert!(matches!(recl.call(f), Err(Error::Inner(12))));
         assert_eq!(false, recl.call_permitted(guard));
     }
 
@@ -231,10 +230,10 @@ mod tests {
         let f = || Err::<(), ()>(());
         let p = |_: &()| false;
 
-        assert_matches!(recl.call_with(p, f), Err(Error::Inner(())));
+        assert!(matches!(recl.call_with(p, f), Err(Error::Inner(()))));
         assert_eq!(true, recl.call_permitted(guard));
 
-        assert_matches!(recl.call_with(p, f), Err(Error::Inner(())));
+        assert!(matches!(recl.call_with(p, f), Err(Error::Inner(()))));
         assert_eq!(true, recl.call_permitted(guard));
     }
 
@@ -251,42 +250,51 @@ mod tests {
 
         // Fill the State::Closed ring buffer
         for _ in 0..2 {
-            assert_matches!(recl.call(|| Err::<(), ()>(())), Err(Error::Inner(())));
-            assert_matches!(
+            assert!(matches!(
+                recl.call(|| Err::<(), ()>(())),
+                Err(Error::Inner(()))
+            ));
+            assert!(matches!(
                 unsafe { &recl.state.load(SeqCst, guard).deref() },
                 State::Closed(_)
-            );
+            ));
         }
 
         // Transition to State::Open on next call
-        assert_matches!(recl.call(|| Err::<(), ()>(())), Err(Error::Inner(())));
-        assert_matches!(
+        assert!(matches!(
+            recl.call(|| Err::<(), ()>(())),
+            Err(Error::Inner(()))
+        ));
+        assert!(matches!(
             unsafe { &recl.state.load(SeqCst, guard).deref() },
             State::Open(_)
-        );
-        assert_matches!(recl.call(|| Err::<(), ()>(())), Err(Error::Rejected));
+        ));
+        assert!(matches!(
+            recl.call(|| Err::<(), ()>(())),
+            Err(Error::Rejected)
+        ));
 
         // Transition to State::HalfOpen on first call after 1 sec
         sleep(1500);
-        assert_matches!(recl.call(|| Ok::<(), ()>(())), Ok(()));
-        assert_matches!(
+        assert!(matches!(recl.call(|| Ok::<(), ()>(())), Ok(())));
+        assert!(matches!(
             unsafe { &recl.state.load(SeqCst, guard).deref() },
             State::HalfOpen(_)
-        );
+        ));
 
         // Fill the State::HalfOpen ring buffer
-        assert_matches!(recl.call(|| Ok::<(), ()>(())), Ok(()));
-        assert_matches!(
+        assert!(matches!(recl.call(|| Ok::<(), ()>(())), Ok(())));
+        assert!(matches!(
             unsafe { &recl.state.load(SeqCst, guard).deref() },
             State::HalfOpen(_)
-        );
+        ));
 
         // Transition to State::Closed when failure rate below threshold
-        assert_matches!(recl.call(|| Ok::<(), ()>(())), Ok(()));
-        assert_matches!(
+        assert!(matches!(recl.call(|| Ok::<(), ()>(())), Ok(())));
+        assert!(matches!(
             unsafe { &recl.state.load(SeqCst, guard).deref() },
             State::Closed(_)
-        );
+        ));
     }
 
     #[test]

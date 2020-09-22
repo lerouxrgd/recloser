@@ -10,7 +10,7 @@ A concurrent [circuit breaker][cb] implemented with ring buffers.
 The `Recloser` struct provides a `call(...)` method to wrap function calls that may fail,
 it will eagerly reject them when some `failure_rate` is reached, and it will allow them
 again after some time.
-A future aware version of `call(...)` is also available through an `async::AsyncRecloser` wrapper.
+A future aware version of `call(...)` is also available through an `AsyncRecloser` wrapper.
 
 The API is largely based on [failsafe][] and the ring buffer implementation on [resilient4j][].
 
@@ -44,7 +44,6 @@ let recloser = Recloser::custom()
 Wrapping dangerous function calls in order to control failure propagation:
 
 ```rust
-use matches::assert_matches;
 use recloser::{Recloser, Error};
 
 // Performs 1 call before calculating failure_rate
@@ -54,18 +53,18 @@ let f1 = || Err::<(), usize>(1);
 
 // First call, just recorded as an error
 let res = recloser.call(f1);
-assert_matches!(res, Err(Error::Inner(1)));
+assert!(matches!(res, Err(Error::Inner(1))));
 
 // Now also computes failure_rate, that is 100% here
 // Will transition to State::Open afterward
 let res = recloser.call(f1);
-assert_matches!(res, Err(Error::Inner(1)));
+assert!(matches!(res, Err(Error::Inner(1))));
 
 let f2 = || Err::<(), i64>(-1);
 
 // All calls are rejected (while in State::Open)
 let res = recloser.call(f2);
-assert_matches!(res, Err(Error::Rejected));
+assert!(matches!(res, Err(Error::Rejected)));
 ```
 
 It is also possible to discard some errors on a per call basis.
@@ -73,7 +72,6 @@ This behavior is controlled by the `ErrorPredicate<E>`trait, which is already
 implemented for all `Fn(&E) -> bool`.
 
 ```rust
-use matches::assert_matches;
 use recloser::{Recloser, Error};
 
 let recloser = Recloser::default();
@@ -85,7 +83,7 @@ let p = |_: &usize| false;
 
 // Will not record resulting Err(1) as an error
 let res = recloser.call_with(p, f);
-assert_matches!(res, Err(Error::Inner(1)));
+assert!(matches!(res, Err(Error::Inner(1))));
 ```
 
 Wrapping functions that return `Future`s requires to use an `AsyncRecloser` that just
@@ -93,8 +91,7 @@ wraps a regular `Recloser`.
 
 ```rust
 use futures::future;
-use recloser::{Recloser, Error};
-use recloser::r#async::AsyncRecloser;
+use recloser::{Recloser, Error, AsyncRecloser};
 
 let recloser = AsyncRecloser::from(Recloser::default());
 
@@ -109,10 +106,10 @@ Benchmarks for `Recloser` and `failsafe::CircuitBreaker`
 - Multi threaded workload: `Recloser` has **10x** better performances
 
 ```sh
-recloser_simple         time:   [386.22 us 388.11 us 390.15 us]
-failsafe_simple         time:   [365.50 us 366.43 us 367.40 us]
-recloser_concurrent     time:   [766.76 us 769.44 us 772.28 us]
-failsafe_concurrent     time:   [9.4803 ms 9.5046 ms 9.5294 ms]
+recloser_simple         time:   [355.17 us 358.67 us 362.52 us]
+failsafe_simple         time:   [403.47 us 406.90 us 410.29 us]
+recloser_concurrent     time:   [668.44 us 674.26 us 680.48 us]
+failsafe_concurrent     time:   [11.523 ms 11.613 ms 11.694 ms]
 ```
 
 These benchmarks were run on a `Intel Core i7-6700HQ @ 8x 3.5GHz` CPU.
