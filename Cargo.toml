@@ -1,6 +1,6 @@
 [package]
 name = "recloser"
-version = "0.3.0"
+version = "1.0.0"
 authors = ["Romain Leroux <romain@leroux.dev>"]
 edition = "2018"
 description = "A concurrent circuit breaker implemented with ring buffers"
