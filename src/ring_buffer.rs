@@ -38,7 +38,11 @@ impl RingBuffer {
 
     pub fn set_current(&self, val_new: bool) -> f32 {
         let backoff = Backoff::new();
-        while self.spin_lock.compare_and_swap(false, true, Acquire) {
+        while self
+            .spin_lock
+            .compare_exchange_weak(false, true, Acquire, Acquire)
+            .is_err()
+        {
             backoff.snooze();
         }
 
