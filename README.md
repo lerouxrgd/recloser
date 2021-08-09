@@ -1,30 +1,35 @@
-# recloser
+# recloser &emsp; [![latest]][crates.io] [![doc]][docs.rs]
 
-[![Crates.io](https://img.shields.io/crates/v/recloser.svg)](https://crates.io/crates/recloser)
-[![Docs](https://docs.rs/recloser/badge.svg)](https://docs.rs/recloser)
-[![MIT licensed](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/lerouxrgd/recloser/blob/master/LICENSE)
-[![Rustc Version 1.36+](https://img.shields.io/badge/rustc-1.36+-lightgray.svg)](https://blog.rust-lang.org/2019/07/04/Rust-1.36.0.html)
+[latest]: https://img.shields.io/crates/v/recloser.svg
+[crates.io]: https://crates.io/crates/recloser
+[doc]: https://docs.rs/recloser/badge.svg
+[docs.rs]: https://docs.rs/recloser
 
 A concurrent [circuit breaker][cb] implemented with ring buffers.
 
-The `Recloser` struct provides a `call(...)` method to wrap function calls that may fail,
-it will eagerly reject them when some `failure_rate` is reached, and it will allow them
-again after some time.
-A future aware version of `call(...)` is also available through an `AsyncRecloser` wrapper.
+The `Recloser` struct provides a `call(...)` method to wrap function calls that may
+fail, it will eagerly reject them when some `failure_rate` is reached, and it will allow
+them again after some time.  A future aware version of `call(...)` is also available
+through an `AsyncRecloser` wrapper.
 
-The API is largely based on [failsafe][] and the ring buffer implementation on [resilient4j][].
+The API is largely based on [failsafe][] and the ring buffer implementation on
+[resilient4j][].
+
+[cb]: https://martinfowler.com/bliki/CircuitBreaker.html
+[failsafe]: https://github.com/dmexe/failsafe-rs
+[resilient4j]: https://resilience4j.readme.io/docs/circuitbreaker
 
 ## Usage
 
 The `Recloser` can be in three states:
- - `Closed(RingBuffer(len))`: The initial `Recloser`'s state. At least `len` calls will
-    be performed before calculating a `failure_rate` based on which transitions to
-	`Open(_)` state may happen.
- - `Open(duration)`: All calls will return `Err(Error::Rejected)` until `duration` has
-    elapsed, then transition to `HalfOpen(_)` state will happen.
- - `HalfOpen(RingBuffer(len))`: At least `len` calls will be performed before
-    calculating a `failure_rate` based on which transitions to either `Closed(_)` or
-	`Open(_)` states will happen.
+ - `State::Closed(RingBuffer(len))`: The initial `Recloser`'s state. At least `len`
+    calls will be performed before calculating a `failure_rate` based on which
+    transitions to `State::Open(_)` state may happen.
+ - `State::Open(duration)`: All calls will return `Err(Error::Rejected)` until
+    `duration` has elapsed, then transition to `State::HalfOpen(_)` state will happen.
+ - `State::HalfOpen(RingBuffer(len))`: At least `len` calls will be performed before
+    calculating a `failure_rate` based on which transitions to either `State::Closed(_)`
+    or `State::Open(_)` states will happen.
 
 The state transition settings can be customized as follows:
 
@@ -113,7 +118,3 @@ failsafe_concurrent     time:   [11.523 ms 11.613 ms 11.694 ms]
 ```
 
 These benchmarks were run on a `Intel Core i7-6700HQ @ 8x 3.5GHz` CPU.
-
-[cb]: https://martinfowler.com/bliki/CircuitBreaker.html
-[failsafe]: https://github.com/dmexe/failsafe-rs
-[resilient4j]: https://resilience4j.readme.io/docs/circuitbreaker
