@@ -10,6 +10,7 @@ use crate::error::{AnyError, Error, ErrorPredicate};
 use crate::recloser::Recloser;
 
 /// Provides future aware method on top of a regular `Recloser`.
+#[derive(Debug, Clone)]
 pub struct AsyncRecloser {
     inner: Arc<Recloser>,
 }
