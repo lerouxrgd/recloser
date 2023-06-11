@@ -6,6 +6,8 @@ pub enum Error<E> {
     Inner(E),
     /// Directly returned when in `Open(_)` state.
     Rejected,
+    /// Returned when specific duration is reached
+    Timeout
 }
 
 /// A trait used to determine whether an `E` should be considered as a failure.

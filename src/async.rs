@@ -1,13 +1,14 @@
+#[cfg(feature = "timeout")]
+use async_io::Timer;
+
+use crate::error::{AnyError, Error, ErrorPredicate};
+use crate::recloser::Recloser;
+use crossbeam::epoch;
+use pin_project::pin_project;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
-
-use crossbeam::epoch;
-use pin_project::pin_project;
-
-use crate::error::{AnyError, Error, ErrorPredicate};
-use crate::recloser::Recloser;
 
 /// Provides future aware method on top of a regular `Recloser`.
 #[derive(Debug, Clone)]
@@ -45,6 +46,8 @@ impl AsyncRecloser {
             future: f,
             predicate,
             checked: false,
+            #[cfg(feature = "timeout")]
+            delay: Timer::after(self.inner.timeout),
         }
     }
 }
@@ -57,6 +60,9 @@ pub struct RecloserFuture<F, P> {
     future: F,
     predicate: P,
     checked: bool,
+    #[cfg(feature = "timeout")]
+    #[pin]
+    delay: Timer,
 }
 
 impl<F, T, E, P> Future for RecloserFuture<F, P>
@@ -82,7 +88,18 @@ where
                 this.recloser.inner.on_success(guard);
                 Poll::Ready(Ok(ok))
             }
-            Poll::Pending => Poll::Pending,
+            Poll::Pending => {
+                #[cfg(feature = "timeout")]
+                return match this.delay.poll(cx) {
+                    Poll::Ready(_) => {
+                        this.recloser.inner.on_error(guard);
+                        return Poll::Ready(Err(Error::Timeout));
+                    }
+                    Poll::Pending => Poll::Pending,
+                };
+                #[cfg(not(feature = "timeout"))]
+                Poll::Pending
+            }
             Poll::Ready(Err(err)) => {
                 if this.predicate.is_err(&err) {
                     this.recloser.inner.on_error(guard);

@@ -20,6 +20,8 @@ pub struct Recloser {
     half_open_len: usize,
     open_wait: Duration,
     state: Atomic<State>,
+    #[cfg(feature = "timeout")]
+    timeout: Duration,
 }
 
 impl Recloser {
@@ -47,7 +49,6 @@ impl Recloser {
         F: FnOnce() -> Result<T, E>,
     {
         let guard = &epoch::pin();
-
         if !self.call_permitted(guard) {
             return Err(Error::Rejected);
         }
@@ -145,6 +146,8 @@ pub struct RecloserBuilder {
     closed_len: usize,
     half_open_len: usize,
     open_wait: Duration,
+    #[cfg(feature = "timeout")]
+    timeout: Duration,
 }
 
 impl RecloserBuilder {
@@ -154,6 +157,8 @@ impl RecloserBuilder {
             closed_len: 100,
             half_open_len: 10,
             open_wait: Duration::from_secs(30),
+            #[cfg(feature = "timeout")]
+            timeout: Duration::from_secs(1),
         }
     }
 
@@ -177,6 +182,12 @@ impl RecloserBuilder {
         self
     }
 
+    #[cfg(feature = "timeout")]
+    pub fn timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
+    }
+
     pub fn build(self) -> Recloser {
         Recloser {
             threshold: self.threshold,
@@ -184,6 +195,8 @@ impl RecloserBuilder {
             half_open_len: self.half_open_len,
             open_wait: self.open_wait,
             state: Atomic::new(State::Closed(RingBuffer::new(self.closed_len))),
+            #[cfg(feature = "timeout")]
+            timeout: self.timeout,
         }
     }
 }

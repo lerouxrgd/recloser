@@ -8,9 +8,13 @@ repository = "https://github.com/lerouxrgd/recloser"
 license = "MIT"
 readme = "README.md"
 
+[features]
+timeout = ["async-io"]
+
 [dependencies]
 crossbeam = "0.8"
 pin-project = "1"
+async-io = { version="1.13.0", optional=true }
 
 [dev-dependencies]
 async-std = "1"
