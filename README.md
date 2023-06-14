@@ -95,12 +95,12 @@ Wrapping functions that return `Future`s requires to use an `AsyncRecloser` that
 wraps a regular `Recloser`.
 
 ```rust
-use futures::future;
+use std::future;
 use recloser::{Recloser, Error, AsyncRecloser};
 
 let recloser = AsyncRecloser::from(Recloser::default());
 
-let future = future::lazy(|_| Err::<(), usize>(1));
+let future = future::ready::<Result<(), usize>>(Err(1));
 let future = recloser.call(future);
 ```
 

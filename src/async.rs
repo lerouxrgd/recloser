@@ -97,8 +97,11 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::future;
+    use std::time::Duration;
+
+    use async_std::future::{timeout, TimeoutError};
     use async_std::task;
-    use futures::future;
 
     use super::*;
 
@@ -109,16 +112,47 @@ mod tests {
         let recloser = Recloser::custom().closed_len(1).build();
         let recloser = AsyncRecloser::from(recloser);
 
-        let future = future::lazy(|_| Err::<(), ()>(()));
+        let future = future::ready::<Result<(), ()>>(Err(()));
         let future = recloser.call(future);
 
         assert!(matches!(task::block_on(future), Err(Error::Inner(()))));
         assert_eq!(true, recloser.inner.call_permitted(guard));
 
-        let future = future::lazy(|_| Err::<usize, usize>(12));
+        let future = future::ready::<Result<usize, usize>>(Err(12));
         let future = recloser.call(future);
 
         assert!(matches!(task::block_on(future), Err(Error::Inner(12))));
         assert_eq!(false, recloser.inner.call_permitted(guard));
+    }
+
+    #[test]
+    fn custom_timeout() {
+        let guard = &epoch::pin();
+
+        let recloser = Recloser::custom().closed_len(1).build();
+        let recloser = AsyncRecloser::from(recloser);
+
+        let future = timeout(Duration::from_millis(5), future::pending::<()>());
+        let future = recloser.call(future);
+
+        assert!(matches!(
+            task::block_on(future),
+            Err(Error::Inner(TimeoutError { .. }))
+        ));
+        assert_eq!(true, recloser.inner.call_permitted(guard));
+
+        let future = timeout(Duration::from_millis(5), future::pending::<usize>());
+        let future = recloser.call(future);
+
+        assert!(matches!(
+            task::block_on(future),
+            Err(Error::Inner(TimeoutError { .. }))
+        ));
+        assert_eq!(false, recloser.inner.call_permitted(guard));
+
+        let future = timeout(Duration::from_millis(5), future::pending::<usize>());
+        let future = recloser.call(future);
+
+        assert!(matches!(task::block_on(future), Err(Error::Rejected)));
     }
 }
