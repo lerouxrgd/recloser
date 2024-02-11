@@ -3,7 +3,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
-use crossbeam::epoch;
+use crossbeam_epoch as epoch;
 use pin_project::pin_project;
 
 use crate::error::{AnyError, Error, ErrorPredicate};

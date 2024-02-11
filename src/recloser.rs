@@ -3,10 +3,10 @@ use fake_clock::FakeClock as Instant;
 #[cfg(not(test))]
 use std::time::Instant;
 
-use std::sync::atomic::Ordering::SeqCst;
+use std::sync::atomic::Ordering::{Acquire, Release};
 use std::time::Duration;
 
-use crossbeam::epoch::{self, Atomic, Guard, Owned};
+use crossbeam_epoch::{self as epoch, Atomic, Guard, Owned};
 
 use crate::error::{AnyError, Error, ErrorPredicate};
 use crate::ring_buffer::RingBuffer;
@@ -69,16 +69,15 @@ impl Recloser {
     }
 
     pub(crate) fn call_permitted(&self, guard: &Guard) -> bool {
-        // safe because `Shared::null()` is never used.
-        match unsafe { self.state.load(SeqCst, guard).deref() } {
+        // Safety: safe because `Shared::null()` is never used.
+        match unsafe { self.state.load(Acquire, guard).deref() } {
             State::Closed(_) => true,
             State::HalfOpen(_) => true,
             State::Open(until) => {
                 if Instant::now() > *until {
-                    self.state.swap(
+                    self.state.store(
                         Owned::new(State::HalfOpen(RingBuffer::new(self.half_open_len))),
-                        SeqCst,
-                        guard,
+                        Release,
                     );
                     true
                 } else {
@@ -89,18 +88,17 @@ impl Recloser {
     }
 
     pub(crate) fn on_success(&self, guard: &Guard) {
-        // safe because `Shared::null()` is never used.
-        match unsafe { self.state.load(SeqCst, guard).deref() } {
+        // Safety: safe because `Shared::null()` is never used.
+        match unsafe { self.state.load(Acquire, guard).deref() } {
             State::Closed(rb) => {
                 rb.set_current(false);
             }
             State::HalfOpen(rb) => {
                 let failure_rate = rb.set_current(false);
                 if failure_rate > -1.0 && failure_rate <= self.threshold {
-                    self.state.swap(
+                    self.state.store(
                         Owned::new(State::Closed(RingBuffer::new(self.closed_len))),
-                        SeqCst,
-                        guard,
+                        Release,
                     );
                 }
             }
@@ -109,15 +107,14 @@ impl Recloser {
     }
 
     pub(crate) fn on_error(&self, guard: &Guard) {
-        // safe because `Shared::null()` is never used.
-        match unsafe { self.state.load(SeqCst, guard).deref() } {
+        // Safety: safe because `Shared::null()` is never used.
+        match unsafe { self.state.load(Acquire, guard).deref() } {
             State::Closed(rb) | State::HalfOpen(rb) => {
                 let failure_rate = rb.set_current(true);
                 if failure_rate > -1.0 && failure_rate >= self.threshold {
-                    self.state.swap(
+                    self.state.store(
                         Owned::new(State::Open(Instant::now() + self.open_wait)),
-                        SeqCst,
-                        guard,
+                        Release,
                     );
                 }
             }
@@ -196,6 +193,7 @@ impl Default for Recloser {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::Ordering::Relaxed;
     use std::sync::{Arc, Barrier};
     use std::thread;
 
@@ -255,7 +253,7 @@ mod tests {
                 Err(Error::Inner(()))
             ));
             assert!(matches!(
-                unsafe { &recl.state.load(SeqCst, guard).deref() },
+                unsafe { &recl.state.load(Relaxed, guard).deref() },
                 State::Closed(_)
             ));
         }
@@ -266,7 +264,7 @@ mod tests {
             Err(Error::Inner(()))
         ));
         assert!(matches!(
-            unsafe { &recl.state.load(SeqCst, guard).deref() },
+            unsafe { &recl.state.load(Relaxed, guard).deref() },
             State::Open(_)
         ));
         assert!(matches!(
@@ -278,21 +276,21 @@ mod tests {
         sleep(1500);
         assert!(matches!(recl.call(|| Ok::<(), ()>(())), Ok(())));
         assert!(matches!(
-            unsafe { &recl.state.load(SeqCst, guard).deref() },
+            unsafe { &recl.state.load(Relaxed, guard).deref() },
             State::HalfOpen(_)
         ));
 
         // Fill the State::HalfOpen ring buffer
         assert!(matches!(recl.call(|| Ok::<(), ()>(())), Ok(())));
         assert!(matches!(
-            unsafe { &recl.state.load(SeqCst, guard).deref() },
+            unsafe { &recl.state.load(Relaxed, guard).deref() },
             State::HalfOpen(_)
         ));
 
         // Transition to State::Closed when failure rate below threshold
         assert!(matches!(recl.call(|| Ok::<(), ()>(())), Ok(())));
         assert!(matches!(
-            unsafe { &recl.state.load(SeqCst, guard).deref() },
+            unsafe { &recl.state.load(Relaxed, guard).deref() },
             State::Closed(_)
         ));
     }

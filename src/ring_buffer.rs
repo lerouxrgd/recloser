@@ -1,9 +1,7 @@
 use std::sync::atomic::{
     AtomicBool, AtomicUsize,
-    Ordering::{Acquire, Release, SeqCst},
+    Ordering::{Acquire, Relaxed, Release},
 };
-
-use crossbeam::utils::Backoff;
 
 /// Records successful and failed calls, calculates failure rate.
 /// A `true` value in the ring represents a call that failed.
@@ -37,39 +35,35 @@ impl RingBuffer {
     }
 
     pub fn set_current(&self, val_new: bool) -> f32 {
-        let backoff = Backoff::new();
-        while self
-            .spin_lock
-            .compare_exchange_weak(false, true, Acquire, Acquire)
-            .is_err()
-        {
-            backoff.snooze();
+        while self.spin_lock.swap(true, Acquire) {
+            std::hint::spin_loop();
         }
 
-        let i = self.index.load(SeqCst);
+        let i = self.index.load(Relaxed);
         let j = if i == self.len - 1 { 0 } else { i + 1 };
 
-        let val_old = self.ring[i].load(SeqCst);
+        let val_old = self.ring[i].load(Relaxed);
 
-        let card_old = self.card.load(SeqCst);
+        let card_old = self.card.load(Relaxed);
         let card_new = card_old - to_int(val_old) + to_int(val_new);
 
-        let rate = if self.filling.load(SeqCst) == self.len {
+        let rate = if self.filling.load(Relaxed) == self.len {
             card_new as f32 / self.len as f32
         } else {
-            self.filling.fetch_add(1, SeqCst);
+            self.filling.fetch_add(1, Relaxed);
             -1.0
         };
 
-        self.ring[i].store(val_new, SeqCst);
-        self.index.store(j, SeqCst);
-        self.card.store(card_new, SeqCst);
+        self.ring[i].store(val_new, Relaxed);
+        self.index.store(j, Relaxed);
+        self.card.store(card_new, Relaxed);
 
         self.spin_lock.store(false, Release);
         rate
     }
 }
 
+#[inline(always)]
 fn to_int(b: bool) -> usize {
     if b {
         1
@@ -87,17 +81,21 @@ mod tests {
 
     #[test]
     fn ring_buffer_correctness() {
-        let rb = Arc::new(RingBuffer::new(7));
+        let num_threads = 8;
+        let rb_len = 7;
+        let loop_len = 1000;
 
-        let mut handles = Vec::with_capacity(8);
-        let barrier = Arc::new(Barrier::new(8));
+        let rb = Arc::new(RingBuffer::new(rb_len));
 
-        for _ in 0..8 {
+        let mut handles = Vec::with_capacity(num_threads);
+        let barrier = Arc::new(Barrier::new(num_threads));
+
+        for _ in 0..num_threads {
             let c = barrier.clone();
             let rb = rb.clone();
             handles.push(thread::spawn(move || {
                 c.wait();
-                for _ in 0..100 {
+                for _ in 0..loop_len {
                     rb.set_current(true);
                     rb.set_current(false);
                     rb.set_current(true);
@@ -110,12 +108,15 @@ mod tests {
         }
 
         assert_eq!(
-            rb.card.load(SeqCst),
+            rb.card.load(Relaxed),
             rb.ring
                 .iter()
-                .map(|b| to_int(b.load(SeqCst)))
+                .map(|b| to_int(b.load(Relaxed)))
                 .fold(0, |acc, i| acc + i)
         );
-        assert_eq!((8 * 100 * 3) % 7, rb.index.load(SeqCst));
+        assert_eq!(
+            (num_threads * loop_len * 3) % rb_len,
+            rb.index.load(Relaxed)
+        );
     }
 }

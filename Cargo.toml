@@ -1,6 +1,6 @@
 [package]
 name = "recloser"
-version = "1.1.0"
+version = "1.1.1"
 authors = ["Romain Leroux <romain@leroux.dev>"]
 edition = "2021"
 description = "A concurrent circuit breaker implemented with ring buffers"
@@ -9,12 +9,12 @@ license = "MIT"
 readme = "README.md"
 
 [dependencies]
-crossbeam = "0.8"
+crossbeam-epoch = "0.9"
 pin-project = "1"
 
 [dev-dependencies]
 async-std = "1"
-criterion = "0.3"
+criterion = "0.5"
 doc-comment = "0.3"
 failsafe = "1"
 fake_clock = "0.3"
