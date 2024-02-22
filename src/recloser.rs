@@ -6,7 +6,7 @@ use std::time::Instant;
 use std::sync::atomic::Ordering::{Acquire, Release};
 use std::time::Duration;
 
-use crossbeam_epoch::{self as epoch, Atomic, Guard, Owned};
+use crossbeam_epoch::{Atomic, Collector, Guard, Owned};
 
 use crate::error::{AnyError, Error, ErrorPredicate};
 use crate::ring_buffer::RingBuffer;
@@ -20,6 +20,7 @@ pub struct Recloser {
     half_open_len: usize,
     open_wait: Duration,
     state: Atomic<State>,
+    epoch: Collector,
 }
 
 impl Recloser {
@@ -46,7 +47,8 @@ impl Recloser {
         P: ErrorPredicate<E>,
         F: FnOnce() -> Result<T, E>,
     {
-        let guard = &epoch::pin();
+        let epoch = self.epoch.register();
+        let guard = &epoch.pin();
 
         if !self.call_permitted(guard) {
             return Err(Error::Rejected);
@@ -142,6 +144,7 @@ pub struct RecloserBuilder {
     closed_len: usize,
     half_open_len: usize,
     open_wait: Duration,
+    epoch: Collector,
 }
 
 impl RecloserBuilder {
@@ -151,6 +154,7 @@ impl RecloserBuilder {
             closed_len: 100,
             half_open_len: 10,
             open_wait: Duration::from_secs(30),
+            epoch: Collector::new(),
         }
     }
 
@@ -174,6 +178,11 @@ impl RecloserBuilder {
         self
     }
 
+    pub fn with_collector(mut self, collector: Collector) -> Self {
+        self.epoch = collector;
+        self
+    }
+
     pub fn build(self) -> Recloser {
         Recloser {
             threshold: self.threshold,
@@ -181,6 +190,7 @@ impl RecloserBuilder {
             half_open_len: self.half_open_len,
             open_wait: self.open_wait,
             state: Atomic::new(State::Closed(RingBuffer::new(self.closed_len))),
+            epoch: self.epoch,
         }
     }
 }
@@ -208,8 +218,13 @@ mod tests {
 
     #[test]
     fn multi_errors() {
-        let recl = Recloser::custom().closed_len(1).build();
-        let guard = &epoch::pin();
+        let epoch = Collector::new();
+        let guard: &Guard = &epoch.register().pin();
+
+        let recl = Recloser::custom()
+            .closed_len(1)
+            .with_collector(epoch)
+            .build();
 
         let f = || Err::<(), ()>(());
         assert!(matches!(recl.call(f), Err(Error::Inner(()))));
@@ -222,8 +237,13 @@ mod tests {
 
     #[test]
     fn error_predicate() {
-        let recl = Recloser::custom().closed_len(1).build();
-        let guard = &epoch::pin();
+        let epoch = Collector::new();
+        let guard: &Guard = &epoch.register().pin();
+
+        let recl = Recloser::custom()
+            .closed_len(1)
+            .with_collector(epoch)
+            .build();
 
         let f = || Err::<(), ()>(());
         let p = |_: &()| false;
@@ -237,14 +257,16 @@ mod tests {
 
     #[test]
     fn recloser_correctness() {
+        let epoch = Collector::new();
+        let guard: &Guard = &epoch.register().pin();
+
         let recl = Recloser::custom()
             .error_rate(0.5)
             .closed_len(2)
             .half_open_len(2)
             .open_wait(Duration::from_secs(1))
+            .with_collector(epoch)
             .build();
-
-        let guard = &epoch::pin();
 
         // Fill the State::Closed ring buffer
         for _ in 0..2 {
