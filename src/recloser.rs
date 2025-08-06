@@ -15,7 +15,8 @@ use crate::ring_buffer::RingBuffer;
 /// calls depending on the state it is in.
 #[derive(Debug)]
 pub struct Recloser {
-    threshold: f32,
+    threshold_closed: f32,
+    threshold_half_open: f32,
     closed_len: usize,
     half_open_len: usize,
     open_wait: Duration,
@@ -95,7 +96,7 @@ impl Recloser {
             }
             State::HalfOpen(rb) => {
                 let failure_rate = rb.set_current(false);
-                if failure_rate > -1.0 && failure_rate <= self.threshold {
+                if failure_rate > -1.0 && failure_rate <= self.threshold_half_open {
                     self.state.store(
                         Owned::new(State::Closed(RingBuffer::new(self.closed_len))),
                         Release,
@@ -109,9 +110,18 @@ impl Recloser {
     pub(crate) fn on_error(&self, guard: &Guard) {
         // Safety: safe because `Shared::null()` is never used.
         match unsafe { self.state.load(Acquire, guard).deref() } {
-            State::Closed(rb) | State::HalfOpen(rb) => {
+            State::Closed(rb) => {
                 let failure_rate = rb.set_current(true);
-                if failure_rate > -1.0 && failure_rate >= self.threshold {
+                if failure_rate > -1.0 && failure_rate >= self.threshold_closed {
+                    self.state.store(
+                        Owned::new(State::Open(Instant::now() + self.open_wait)),
+                        Release,
+                    );
+                }
+            }
+            State::HalfOpen(rb) => {
+                let failure_rate = rb.set_current(true);
+                if failure_rate > -1.0 && failure_rate >= self.threshold_half_open {
                     self.state.store(
                         Owned::new(State::Open(Instant::now() + self.open_wait)),
                         Release,
@@ -138,7 +148,8 @@ enum State {
 /// A helper struct to build customized `Recloser`.
 #[derive(Debug)]
 pub struct RecloserBuilder {
-    threshold: f32,
+    threshold_closed: f32,
+    threshold_half_open: f32,
     closed_len: usize,
     half_open_len: usize,
     open_wait: Duration,
@@ -147,7 +158,8 @@ pub struct RecloserBuilder {
 impl RecloserBuilder {
     fn new() -> Self {
         RecloserBuilder {
-            threshold: 0.5,
+            threshold_closed: 0.5,
+            threshold_half_open: 0.5,
             closed_len: 100,
             half_open_len: 10,
             open_wait: Duration::from_secs(30),
@@ -155,7 +167,18 @@ impl RecloserBuilder {
     }
 
     pub fn error_rate(mut self, threshold: f32) -> Self {
-        self.threshold = threshold;
+        self.threshold_closed = threshold;
+        self.threshold_half_open = threshold;
+        self
+    }
+
+    pub fn error_rate_closed(mut self, threshold: f32) -> Self {
+        self.threshold_closed = threshold;
+        self
+    }
+
+    pub fn error_rate_half_open(mut self, threshold: f32) -> Self {
+        self.threshold_half_open = threshold;
         self
     }
 
@@ -176,7 +199,8 @@ impl RecloserBuilder {
 
     pub fn build(self) -> Recloser {
         Recloser {
-            threshold: self.threshold,
+            threshold_closed: self.threshold_closed,
+            threshold_half_open: self.threshold_half_open,
             closed_len: self.closed_len,
             half_open_len: self.half_open_len,
             open_wait: self.open_wait,
