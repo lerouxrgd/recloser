@@ -100,7 +100,7 @@ mod tests {
     use std::future;
     use std::time::Duration;
 
-    use async_std::future::{timeout, TimeoutError};
+    use async_std::future::{TimeoutError, timeout};
     use async_std::task;
 
     use super::*;

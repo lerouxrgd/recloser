@@ -23,13 +23,13 @@ The API is largely based on [failsafe][] and the ring buffer implementation on
 
 The `Recloser` can be in three states:
  - `State::Closed(RingBuffer(len))`: The initial `Recloser`'s state. At least `len`
-    calls will be performed before calculating a `failure_rate` based on which
-    transitions to `State::Open(_)` state may happen.
+   calls will be performed before calculating a `failure_rate` based on which
+   transitions to `State::Open(_)` state may happen.
  - `State::Open(duration)`: All calls will return `Err(Error::Rejected)` until
-    `duration` has elapsed, then transition to `State::HalfOpen(_)` state will happen.
+   `duration` has elapsed, then transition to `State::HalfOpen(_)` state will happen.
  - `State::HalfOpen(RingBuffer(len))`: At least `len` calls will be performed before
-    calculating a `failure_rate` based on which transitions to either `State::Closed(_)`
-    or `State::Open(_)` states will happen.
+   calculating a `failure_rate` based on which transitions to either `State::Closed(_)`
+   or `State::Open(_)` states will happen.
 
 The state transition settings can be customized as follows:
 

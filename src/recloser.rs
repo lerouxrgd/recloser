@@ -253,7 +253,7 @@ mod tests {
                 Err(Error::Inner(()))
             ));
             assert!(matches!(
-                unsafe { &recl.state.load(Relaxed, guard).deref() },
+                unsafe { recl.state.load(Relaxed, guard).deref() },
                 State::Closed(_)
             ));
         }
@@ -264,7 +264,7 @@ mod tests {
             Err(Error::Inner(()))
         ));
         assert!(matches!(
-            unsafe { &recl.state.load(Relaxed, guard).deref() },
+            unsafe { recl.state.load(Relaxed, guard).deref() },
             State::Open(_)
         ));
         assert!(matches!(
@@ -276,21 +276,21 @@ mod tests {
         sleep(1500);
         assert!(matches!(recl.call(|| Ok::<(), ()>(())), Ok(())));
         assert!(matches!(
-            unsafe { &recl.state.load(Relaxed, guard).deref() },
+            unsafe { recl.state.load(Relaxed, guard).deref() },
             State::HalfOpen(_)
         ));
 
         // Fill the State::HalfOpen ring buffer
         assert!(matches!(recl.call(|| Ok::<(), ()>(())), Ok(())));
         assert!(matches!(
-            unsafe { &recl.state.load(Relaxed, guard).deref() },
+            unsafe { recl.state.load(Relaxed, guard).deref() },
             State::HalfOpen(_)
         ));
 
         // Transition to State::Closed when failure rate below threshold
         assert!(matches!(recl.call(|| Ok::<(), ()>(())), Ok(())));
         assert!(matches!(
-            unsafe { &recl.state.load(Relaxed, guard).deref() },
+            unsafe { recl.state.load(Relaxed, guard).deref() },
             State::Closed(_)
         ));
     }
@@ -313,12 +313,12 @@ mod tests {
             let c = barrier.clone();
             let recl = recl.clone();
             handles.push(thread::spawn(move || {
-                let mut rng = rand::thread_rng();
+                let mut rng = rand::rng();
                 c.wait();
                 for _ in 0..1000 {
                     let _ = recl.call(|| Ok::<(), ()>(()));
                     let _ = recl.call(|| Err::<(), ()>(()));
-                    if rng.gen::<f64>() < 0.5 {
+                    if rng.random::<f64>() < 0.5 {
                         let _ = recl.call(|| Err::<(), ()>(()));
                     } else {
                         let _ = recl.call(|| Ok::<(), ()>(()));
