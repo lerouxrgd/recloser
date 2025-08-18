@@ -1,12 +1,12 @@
 use std::hint::black_box;
 use std::time::Duration;
 
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, criterion_group, criterion_main};
 use fake_clock::FakeClock;
 use num_cpus;
 use rayon::prelude::*;
 
-use failsafe::{backoff, failure_policy, CircuitBreaker, Config};
+use failsafe::{CircuitBreaker, Config, backoff, failure_policy};
 use recloser::Recloser;
 
 const ITER_C: u64 = 10_000;

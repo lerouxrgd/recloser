@@ -65,11 +65,7 @@ impl RingBuffer {
 
 #[inline(always)]
 fn to_int(b: bool) -> usize {
-    if b {
-        1
-    } else {
-        0
-    }
+    if b { 1 } else { 0 }
 }
 
 #[cfg(test)]

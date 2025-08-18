@@ -104,6 +104,38 @@ let future = future::ready::<Result<(), usize>>(Err(1));
 let future = recloser.call(future);
 ```
 
+## Observability
+
+With the optional **tracing** Cargo feature activated, `Recloser` instances will emit
+events when transitioning states.
+
+This is demonstrated in the [observability.rs](./examples/observability.rs) example:
+
+```sh
+cargo run --features tracing --example observability
+```
+
+Emitted tracing events:
+
+```rust
+// Recloser transitioned into `State::Closed(__)`
+tracing::event!(
+    target: recloser::RECLOSER_EVENT,
+    tracing::Level::INFO,
+    state = "Closed",
+    started_ts = 1755616511
+);
+
+// Recloser transitioned out of `State::Closed(__)`
+tracing::event!(
+    target: recloser::RECLOSER_EVENT,
+    tracing::Level::INFO,
+    state = "Closed",
+    ended_ts = 1755616514,
+    duration_sec = 3
+);
+```
+
 ## Performances
 
 Benchmarks for `Recloser` and `failsafe::CircuitBreaker`
