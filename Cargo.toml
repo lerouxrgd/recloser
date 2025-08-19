@@ -1,8 +1,8 @@
 [package]
 name = "recloser"
-version = "1.1.1"
+version = "1.2.0"
 authors = ["Romain Leroux <romain@leroux.dev>"]
-edition = "2021"
+edition = "2024"
 description = "A concurrent circuit breaker implemented with ring buffers"
 repository = "https://github.com/lerouxrgd/recloser"
 license = "MIT"
@@ -11,16 +11,23 @@ readme = "README.md"
 [dependencies]
 crossbeam-epoch = "0.9"
 pin-project = "1"
+tracing = { version = "0.1", optional = true }
 
 [dev-dependencies]
 async-std = "1"
-criterion = "0.5"
+criterion = "0.7"
 doc-comment = "0.3"
 failsafe = "1"
 fake_clock = "0.3"
 num_cpus = "1"
-rand = "0.8"
+rand = "0.9"
 rayon = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["registry", "env-filter"] }
+
+[features]
+default = []
+tracing = ["dep:tracing"]
 
 [[bench]]
 name = "recloser"

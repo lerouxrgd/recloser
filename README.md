@@ -23,13 +23,13 @@ The API is largely based on [failsafe][] and the ring buffer implementation on
 
 The `Recloser` can be in three states:
  - `State::Closed(RingBuffer(len))`: The initial `Recloser`'s state. At least `len`
-    calls will be performed before calculating a `failure_rate` based on which
-    transitions to `State::Open(_)` state may happen.
+   calls will be performed before calculating a `failure_rate` based on which
+   transitions to `State::Open(_)` state may happen.
  - `State::Open(duration)`: All calls will return `Err(Error::Rejected)` until
-    `duration` has elapsed, then transition to `State::HalfOpen(_)` state will happen.
+   `duration` has elapsed, then transition to `State::HalfOpen(_)` state will happen.
  - `State::HalfOpen(RingBuffer(len))`: At least `len` calls will be performed before
-    calculating a `failure_rate` based on which transitions to either `State::Closed(_)`
-    or `State::Open(_)` states will happen.
+   calculating a `failure_rate` based on which transitions to either `State::Closed(_)`
+   or `State::Open(_)` states will happen.
 
 The state transition settings can be customized as follows:
 
@@ -102,6 +102,38 @@ let recloser = AsyncRecloser::from(Recloser::default());
 
 let future = future::ready::<Result<(), usize>>(Err(1));
 let future = recloser.call(future);
+```
+
+## Observability
+
+With the optional **tracing** Cargo feature activated, `Recloser` instances will emit
+events when transitioning states.
+
+This is demonstrated in the [observability.rs](./examples/observability.rs) example:
+
+```sh
+cargo run --features tracing --example observability
+```
+
+Emitted tracing events:
+
+```rust
+// Recloser transitioned into `State::Closed(__)`
+tracing::event!(
+    target: recloser::RECLOSER_EVENT,
+    tracing::Level::INFO,
+    state = "Closed",
+    started_ts = 1755616511
+);
+
+// Recloser transitioned out of `State::Closed(__)`
+tracing::event!(
+    target: recloser::RECLOSER_EVENT,
+    tracing::Level::INFO,
+    state = "Closed",
+    ended_ts = 1755616514,
+    duration_sec = 3
+);
 ```
 
 ## Performances

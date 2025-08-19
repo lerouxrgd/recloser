@@ -1,7 +1,7 @@
-/// Error returned by `Recloser` wrapped function calls.
+/// Error returned by [`Recloser`](crate::Recloser) wrapped function calls.
 #[derive(Debug)]
 pub enum Error<E> {
-    /// Returned when got an `Err(e)` while performing a wrapped function call
+    /// Returned when got an [`Err(e)`](Result::Err) while performing a wrapped function call
     /// in `Closed(_)` or `HalfOpen(_)` state.
     Inner(E),
     /// Directly returned when in `Open(_)` state.
