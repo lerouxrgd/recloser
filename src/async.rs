@@ -9,20 +9,14 @@ use pin_project::pin_project;
 use crate::error::{AnyError, Error, ErrorPredicate};
 use crate::recloser::Recloser;
 
-/// Provides future aware method on top of a regular `Recloser`.
+/// Provides future aware method on top of a regular [`Recloser`].
 #[derive(Debug, Clone)]
 pub struct AsyncRecloser {
     inner: Arc<Recloser>,
 }
 
 impl AsyncRecloser {
-    pub fn from(recloser: Recloser) -> Self {
-        AsyncRecloser {
-            inner: Arc::new(recloser),
-        }
-    }
-
-    /// Same as `Recloser::call(...)` but with `Future`.
+    /// Same as [`Recloser::call`] but with [`Future`].
     pub fn call<F, T, E>(&self, f: F) -> RecloserFuture<F, AnyError>
     where
         F: Future<Output = Result<T, E>>,
@@ -30,7 +24,7 @@ impl AsyncRecloser {
         self.call_with(AnyError, f)
     }
 
-    /// Same as `Recloser::call_with(...)` but with `Future`.
+    /// Same as [`Recloser::call_with`] but with [`Future`].
     pub fn call_with<F, T, E, P>(&self, predicate: P, f: F) -> RecloserFuture<F, P>
     where
         F: Future<Output = Result<T, E>>,
@@ -49,7 +43,15 @@ impl AsyncRecloser {
     }
 }
 
-/// Custom `Future` returned by `AsyncRecloser` wrapped future calls.
+impl From<Recloser> for AsyncRecloser {
+    fn from(recloser: Recloser) -> Self {
+        AsyncRecloser {
+            inner: Arc::new(recloser),
+        }
+    }
+}
+
+/// Custom [`Future`] returned by [`AsyncRecloser`] wrapped future calls.
 #[pin_project]
 pub struct RecloserFuture<F, P> {
     recloser: AsyncRecloser,
@@ -116,13 +118,13 @@ mod tests {
         let future = recloser.call(future);
 
         assert!(matches!(task::block_on(future), Err(Error::Inner(()))));
-        assert_eq!(true, recloser.inner.call_permitted(guard));
+        assert!(recloser.inner.call_permitted(guard));
 
         let future = future::ready::<Result<usize, usize>>(Err(12));
         let future = recloser.call(future);
 
         assert!(matches!(task::block_on(future), Err(Error::Inner(12))));
-        assert_eq!(false, recloser.inner.call_permitted(guard));
+        assert!(!recloser.inner.call_permitted(guard));
     }
 
     #[test]
@@ -139,7 +141,7 @@ mod tests {
             task::block_on(future),
             Err(Error::Inner(TimeoutError { .. }))
         ));
-        assert_eq!(true, recloser.inner.call_permitted(guard));
+        assert!(recloser.inner.call_permitted(guard));
 
         let future = timeout(Duration::from_millis(5), future::pending::<usize>());
         let future = recloser.call(future);
@@ -148,7 +150,7 @@ mod tests {
             task::block_on(future),
             Err(Error::Inner(TimeoutError { .. }))
         ));
-        assert_eq!(false, recloser.inner.call_permitted(guard));
+        assert!(!recloser.inner.call_permitted(guard));
 
         let future = timeout(Duration::from_millis(5), future::pending::<usize>());
         let future = recloser.call(future);

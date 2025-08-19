@@ -31,14 +31,14 @@ pub struct Recloser {
 }
 
 impl Recloser {
-    /// Returns a builder to create a customized `Recloser`.
+    /// Returns a builder to create a customized [`Recloser`].
     pub fn custom() -> RecloserBuilder {
         RecloserBuilder::new()
     }
 
-    /// Wraps a function that may fail, records the result as success or failure.
-    /// Uses default `AnyError` predicate that considers any `Err(_)` as a failure.
-    /// Based on the result, state transition may happen.
+    /// Wraps a function that may fail, records the result as success or failure. Uses
+    /// default [`AnyError`] predicate that considers any [`Err(_)`](Result::Err) as a
+    /// failure. Based on the result, state transition may happen.
     pub fn call<F, T, E>(&self, f: F) -> Result<T, Error<E>>
     where
         F: FnOnce() -> Result<T, E>,
@@ -260,14 +260,14 @@ impl Recloser {
     }
 }
 
-/// The states a `Recloser` can be in.
+/// The states a [`Recloser`] can be in.
 #[derive(Debug)]
 enum State {
     /// Allows calls until a failure_rate threshold is reached.
     Closed(RingBuffer),
-    /// Rejects all calls until the future `Instant` is reached.
+    /// Rejects all calls until the future [`Instant`] is reached.
     Open(Instant),
-    /// Allows calls until the underlying `RingBuffer` is full,
+    /// Allows calls until the underlying [`RingBuffer`] is full,
     /// then calculates a failure_rate based on which the next transition will happen.
     HalfOpen(RingBuffer),
 }
@@ -283,7 +283,7 @@ impl State {
     }
 }
 
-/// A helper struct to build customized `Recloser`.
+/// A helper struct to build customized [`Recloser`].
 #[derive(Debug)]
 pub struct RecloserBuilder {
     threshold_closed: f32,
@@ -392,11 +392,11 @@ mod tests {
 
         let f = || Err::<(), ()>(());
         assert!(matches!(recl.call(f), Err(Error::Inner(()))));
-        assert_eq!(true, recl.call_permitted(guard));
+        assert!(recl.call_permitted(guard));
 
         let f = || Err::<(), usize>(12);
         assert!(matches!(recl.call(f), Err(Error::Inner(12))));
-        assert_eq!(false, recl.call_permitted(guard));
+        assert!(!recl.call_permitted(guard));
     }
 
     #[test]
@@ -408,10 +408,10 @@ mod tests {
         let p = |_: &()| false;
 
         assert!(matches!(recl.call_with(p, f), Err(Error::Inner(()))));
-        assert_eq!(true, recl.call_permitted(guard));
+        assert!(recl.call_permitted(guard));
 
         assert!(matches!(recl.call_with(p, f), Err(Error::Inner(()))));
-        assert_eq!(true, recl.call_permitted(guard));
+        assert!(recl.call_permitted(guard));
     }
 
     #[test]

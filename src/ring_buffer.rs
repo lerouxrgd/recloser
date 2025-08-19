@@ -105,10 +105,7 @@ mod tests {
 
         assert_eq!(
             rb.card.load(Relaxed),
-            rb.ring
-                .iter()
-                .map(|b| to_int(b.load(Relaxed)))
-                .fold(0, |acc, i| acc + i)
+            rb.ring.iter().map(|b| to_int(b.load(Relaxed))).sum()
         );
         assert_eq!(
             (num_threads * loop_len * 3) % rb_len,
