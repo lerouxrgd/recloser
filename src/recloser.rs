@@ -348,7 +348,7 @@ impl RecloserBuilder {
     }
     
     pub fn open_wait_strategy(mut self, open_wait_strategy: OpenWaitStrategy) -> Self {
-        self.open_wait_strategy = self.open_wait_strategy;
+        self.open_wait_strategy = Some(open_wait_strategy);
         self
     }
 
