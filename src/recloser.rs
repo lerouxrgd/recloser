@@ -500,8 +500,8 @@ mod tests {
     fn assert_state_transitions(recl: &Recloser, guard: &Guard) {
         
         //  result:  e e e x ____ ✓ e e x  ____ ✓ ✓ ✓ 
-        //   state:      o o      h h o o       h h c
-        //    flap:      1 1      1 1 2 2       2 2
+        //   state:  c c o o      h h o o       h h c
+        //    flap:  - - 1 1      1 1 2 2       2 2 -
 
         // Fill the State::Closed ring buffer
         for _ in 0..2 {
