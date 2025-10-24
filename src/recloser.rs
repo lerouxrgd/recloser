@@ -85,9 +85,9 @@ impl Recloser {
         match unsafe { shared.deref() } {
             State::Closed(_) => true,
             State::HalfOpen(_,_) => true,
-            _old_state @ State::Open(until,fp) => {
+            _old_state @ State::Open(until,fc) => {
                 if Instant::now() > *until {
-                    let new_state = State::HalfOpen(RingBuffer::new(self.half_open_len), *fp);
+                    let new_state = State::HalfOpen(RingBuffer::new(self.half_open_len), *fc);
                     #[cfg(feature = "tracing")]
                     let new_state_name = new_state.name();
 
