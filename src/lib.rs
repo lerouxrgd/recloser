@@ -7,7 +7,7 @@ mod ring_buffer;
 
 pub use crate::r#async::{AsyncRecloser, RecloserFuture};
 pub use crate::error::{AnyError, Error, ErrorPredicate};
-pub use crate::recloser::{RECLOSER_EVENT, Recloser, RecloserBuilder, OpenWaitStrategy};
+pub use crate::recloser::{OpenWaitStrategy, RECLOSER_EVENT, Recloser, RecloserBuilder};
 
 #[cfg(doctest)]
 mod doctests {

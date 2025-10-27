@@ -84,8 +84,8 @@ impl Recloser {
         // Safety: safe because `Shared::null()` is never used.
         match unsafe { shared.deref() } {
             State::Closed(_) => true,
-            State::HalfOpen(_,_) => true,
-            _old_state @ State::Open(until,fc) => {
+            State::HalfOpen(_, _) => true,
+            _old_state @ State::Open(until, fc) => {
                 if Instant::now() > *until {
                     let new_state = State::HalfOpen(RingBuffer::new(self.half_open_len), *fc);
                     #[cfg(feature = "tracing")]
@@ -174,7 +174,7 @@ impl Recloser {
                     }
                 }
             }
-            State::Open(_,_) => (),
+            State::Open(_, _) => (),
         };
     }
 
@@ -220,16 +220,15 @@ impl Recloser {
                     }
                 }
             }
-            _old_state @ State::HalfOpen(rb,fc) => {
+            _old_state @ State::HalfOpen(rb, fc) => {
                 let failure_rate = rb.set_current(true);
                 if failure_rate > -1.0 && failure_rate >= self.threshold_half_open {
-                   
                     let new_wait = match self.open_wait_strategy.as_ref() {
                         None => Instant::now() + self.open_wait,
-                        Some(strategy) => Instant::now() + strategy.next_wait(*fc, self.open_wait)
+                        Some(strategy) => Instant::now() + strategy.next_wait(*fc, self.open_wait),
                     };
                     let new_state = State::Open(new_wait, fc + 1);
-                    
+
                     #[cfg(feature = "tracing")]
                     let new_state_name = new_state.name();
 
@@ -301,7 +300,7 @@ pub struct RecloserBuilder {
     closed_len: usize,
     half_open_len: usize,
     open_wait: Duration,
-    open_wait_strategy: Option<OpenWaitStrategy>
+    open_wait_strategy: Option<OpenWaitStrategy>,
 }
 
 impl RecloserBuilder {
@@ -312,7 +311,7 @@ impl RecloserBuilder {
             closed_len: 100,
             half_open_len: 10,
             open_wait: Duration::from_secs(30),
-            open_wait_strategy: None
+            open_wait_strategy: None,
         }
     }
 
@@ -346,7 +345,7 @@ impl RecloserBuilder {
         self.open_wait = open_wait;
         self
     }
-    
+
     pub fn open_wait_strategy(mut self, open_wait_strategy: OpenWaitStrategy) -> Self {
         self.open_wait_strategy = Some(open_wait_strategy);
         self
@@ -390,20 +389,20 @@ impl Default for Recloser {
 
 pub struct OpenWaitStrategy {
     max_wait: Duration,
-    next_wait: Box<dyn Fn(u32, Duration) -> Duration + Send + Sync>
+    next_wait: Box<dyn Fn(u32, Duration) -> Duration + Send + Sync>,
 }
 
 impl OpenWaitStrategy {
-    
     pub fn new<F>(max_wait: Duration, strategy: F) -> Self
     where
-        F: Fn(u32, Duration) -> Duration + Send + Sync + 'static {
+        F: Fn(u32, Duration) -> Duration + Send + Sync + 'static,
+    {
         Self {
             max_wait,
-            next_wait: Box::new(strategy)
+            next_wait: Box::new(strategy),
         }
     }
-    
+
     pub fn next_wait(&self, flap_count: u32, open_wait: Duration) -> Duration {
         let wait = self.next_wait.deref()(flap_count, open_wait);
         wait.min(self.max_wait)
@@ -418,8 +417,6 @@ impl std::fmt::Debug for OpenWaitStrategy {
             .finish()
     }
 }
-
-
 
 #[cfg(test)]
 mod tests {
@@ -475,31 +472,29 @@ mod tests {
             .build();
 
         let guard = &epoch::pin();
-        
+
         assert_state_transitions(&recl, guard);
     }
 
     #[test]
     fn recloser_correctness_with_strategy() {
-        
         let recl = Recloser::custom()
             .error_rate(0.5)
             .closed_len(2)
             .half_open_len(2)
             .open_wait(Duration::from_secs(1))
-            .open_wait_strategy(
-                OpenWaitStrategy::new(Duration::from_secs(5), |_, wait| wait)
-            )
+            .open_wait_strategy(OpenWaitStrategy::new(Duration::from_secs(5), |_, wait| {
+                wait
+            }))
             .build();
 
         let guard = &epoch::pin();
 
         assert_state_transitions(&recl, guard);
     }
-    
+
     fn assert_state_transitions(recl: &Recloser, guard: &Guard) {
-        
-        //  result:  e e e x ____ ✓ e e x  ____ ✓ ✓ ✓ 
+        //  result:  e e e x ____ ✓ e e x  ____ ✓ ✓ ✓
         //   state:  c c o o      h h o o       h h c
         //    flap:  - - 1 1      1 1 2 2       2 2 -
 
@@ -522,7 +517,7 @@ mod tests {
         ));
         assert!(matches!(
             unsafe { recl.state.load(Relaxed, guard).deref() },
-            State::Open(_,1)
+            State::Open(_, 1)
         ));
         assert!(matches!(
             recl.call(|| Err::<(), ()>(())),
@@ -534,21 +529,27 @@ mod tests {
         assert!(matches!(recl.call(|| Ok::<(), ()>(())), Ok(())));
         assert!(matches!(
             unsafe { recl.state.load(Relaxed, guard).deref() },
-            State::HalfOpen(_,1)
+            State::HalfOpen(_, 1)
         ));
 
         // Fill the State::HaflOpen ring buffer
-        assert!(matches!(recl.call(|| Err::<(), ()>(())), Err(Error::Inner(()))));
+        assert!(matches!(
+            recl.call(|| Err::<(), ()>(())),
+            Err(Error::Inner(()))
+        ));
         assert!(matches!(
             unsafe { recl.state.load(Relaxed, guard).deref() },
-            State::HalfOpen(_,1)
+            State::HalfOpen(_, 1)
         ));
 
         // Transition to state State::Open(2) when failure rate above threshold
-        assert!(matches!(recl.call(|| Err::<(), ()>(())), Err(Error::Inner(()))));
+        assert!(matches!(
+            recl.call(|| Err::<(), ()>(())),
+            Err(Error::Inner(()))
+        ));
         assert!(matches!(
             unsafe { recl.state.load(Relaxed, guard).deref() },
-            State::Open(_,2)
+            State::Open(_, 2)
         ));
 
         assert!(matches!(
@@ -561,7 +562,7 @@ mod tests {
         assert!(matches!(recl.call(|| Ok::<(), ()>(())), Ok(())));
         assert!(matches!(
             unsafe { recl.state.load(Relaxed, guard).deref() },
-            State::HalfOpen(_,2)
+            State::HalfOpen(_, 2)
         ));
 
         // Fill the State::HaflOpen ring buffer
@@ -612,23 +613,19 @@ mod tests {
             handle.join().unwrap();
         }
     }
-    
+
     #[test]
     fn test_custom_wait() {
-       
         let open_wait = Duration::from_secs(1);
-        let strategy = OpenWaitStrategy::new(
-            Duration::from_secs(5),
-            |fc, wait| {
-                // simple exponential backoff
-                let base: u64 = 2;
-                let wait_ms: u64 = wait.as_millis() as u64;
-                let next_wait_ms = base.pow(fc) * wait_ms;
-                    
-                Duration::from_millis(next_wait_ms)
-            }
-        );
-        
+        let strategy = OpenWaitStrategy::new(Duration::from_secs(5), |fc, wait| {
+            // simple exponential backoff
+            let base: u64 = 2;
+            let wait_ms: u64 = wait.as_millis() as u64;
+            let next_wait_ms = base.pow(fc) * wait_ms;
+
+            Duration::from_millis(next_wait_ms)
+        });
+
         // 1, 2, 4, 5, ... 5, ..,
         assert_eq!(strategy.next_wait(0, open_wait), Duration::from_secs(1));
         assert_eq!(strategy.next_wait(1, open_wait), Duration::from_secs(2));

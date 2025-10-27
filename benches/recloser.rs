@@ -38,7 +38,9 @@ fn make_recloser_with_strategy() -> Recloser {
         .closed_len(10)
         .half_open_len(5)
         .open_wait(Duration::from_secs(1))
-        .open_wait_strategy(OpenWaitStrategy::new(Duration::from_secs(2), |_, wait| wait))
+        .open_wait_strategy(OpenWaitStrategy::new(Duration::from_secs(2), |_, wait| {
+            wait
+        }))
         .build()
 }
 
@@ -137,8 +139,12 @@ fn criterion_benchmark(c: &mut Criterion) {
     c.bench_function("failsafe_simple", |b| b.iter(|| failsafe_simple()));
     c.bench_function("recloser_concurrent", |b| b.iter(|| recloser_concurrent()));
     c.bench_function("failsafe_concurrent", |b| b.iter(|| failsafe_concurrent()));
-    c.bench_function("recloser_simple_with_strategy", |b| b.iter(|| recloser_simple_with_strategy()));
-    c.bench_function("recloser_concurrent_with_strategy", |b| b.iter(|| recloser_concurrent_with_strategy()));
+    c.bench_function("recloser_simple_with_strategy", |b| {
+        b.iter(|| recloser_simple_with_strategy())
+    });
+    c.bench_function("recloser_concurrent_with_strategy", |b| {
+        b.iter(|| recloser_concurrent_with_strategy())
+    });
 }
 
 criterion_group!(benches, criterion_benchmark);
