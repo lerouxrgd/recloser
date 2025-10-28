@@ -286,8 +286,8 @@ impl State {
     fn name(&self) -> &'static str {
         match self {
             State::Closed(_) => "Closed",
-            State::Open(_) => "Open",
-            State::HalfOpen(_) => "HalfOpen",
+            State::Open(_, _) => "Open",
+            State::HalfOpen(_, _) => "HalfOpen",
         }
     }
 }
