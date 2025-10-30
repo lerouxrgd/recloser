@@ -1,7 +1,5 @@
 #[cfg(test)]
 use fake_clock::FakeClock as Instant;
-use std::fmt::Formatter;
-use std::ops::Deref;
 #[cfg(feature = "tracing")]
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
@@ -20,14 +18,13 @@ pub const RECLOSER_EVENT: &str = "recloser_event";
 
 /// A concurrent cirbuit breaker based on `RingBuffer`s that allows or rejects
 /// calls depending on the state it is in.
-#[derive(Debug)]
 pub struct Recloser {
     threshold_closed: f32,
     threshold_half_open: f32,
     closed_len: usize,
     half_open_len: usize,
     open_wait: Duration,
-    open_wait_strategy: Option<OpenWaitStrategy>,
+    open_wait_strategy: Option<Box<dyn WaitStrategy>>,
     state: Atomic<State>,
     #[cfg(feature = "tracing")]
     state_started_ts: AtomicU64,
@@ -268,6 +265,34 @@ impl Recloser {
     }
 }
 
+impl core::fmt::Debug for Recloser {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+        let Recloser {
+            threshold_closed,
+            threshold_half_open,
+            closed_len,
+            half_open_len,
+            open_wait,
+            open_wait_strategy,
+            state,
+        } = self;
+        f.debug_struct("Recloser")
+            .field("threshold_closed", &threshold_closed)
+            .field("threshold_half_open", &threshold_half_open)
+            .field("closed_len", &closed_len)
+            .field("half_open_len", &half_open_len)
+            .field("open_wait", &open_wait)
+            .field(
+                "open_wait_strategy",
+                &open_wait_strategy
+                    .as_ref()
+                    .map(|_| "Some(Box<dyn WaitStrategy>)"),
+            )
+            .field("state", &state)
+            .finish()
+    }
+}
+
 /// The states a [`Recloser`] can be in.
 #[derive(Debug)]
 enum State {
@@ -293,14 +318,13 @@ impl State {
 }
 
 /// A helper struct to build customized [`Recloser`].
-#[derive(Debug)]
 pub struct RecloserBuilder {
     threshold_closed: f32,
     threshold_half_open: f32,
     closed_len: usize,
     half_open_len: usize,
     open_wait: Duration,
-    open_wait_strategy: Option<OpenWaitStrategy>,
+    open_wait_strategy: Option<Box<dyn WaitStrategy>>,
 }
 
 impl RecloserBuilder {
@@ -346,8 +370,8 @@ impl RecloserBuilder {
         self
     }
 
-    pub fn open_wait_strategy(mut self, open_wait_strategy: OpenWaitStrategy) -> Self {
-        self.open_wait_strategy = Some(open_wait_strategy);
+    pub fn open_wait_strategy<F: WaitStrategy>(mut self, open_wait_strategy: F) -> Self {
+        self.open_wait_strategy = Some(Box::new(open_wait_strategy));
         self
     }
 
@@ -387,34 +411,42 @@ impl Default for Recloser {
     }
 }
 
-pub struct OpenWaitStrategy {
-    max_wait: Duration,
-    next_wait: Box<dyn Fn(u32, Duration) -> Duration + Send + Sync>,
-}
-
-impl OpenWaitStrategy {
-    pub fn new<F>(max_wait: Duration, strategy: F) -> Self
-    where
-        F: Fn(u32, Duration) -> Duration + Send + Sync + 'static,
-    {
-        Self {
-            max_wait,
-            next_wait: Box::new(strategy),
-        }
-    }
-
-    pub fn next_wait(&self, flap_count: u32, open_wait: Duration) -> Duration {
-        let wait = self.next_wait.deref()(flap_count, open_wait);
-        wait.min(self.max_wait)
-    }
-}
-
-impl std::fmt::Debug for OpenWaitStrategy {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("OpenWaitStrategy")
-            .field("max_wait", &self.max_wait)
-            .field("next_wait", &"<function>")
+impl core::fmt::Debug for RecloserBuilder {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+        let RecloserBuilder {
+            threshold_closed,
+            threshold_half_open,
+            closed_len,
+            half_open_len,
+            open_wait,
+            open_wait_strategy,
+        } = self;
+        f.debug_struct("RecloserBuilder")
+            .field("threshold_closed", &threshold_closed)
+            .field("threshold_half_open", &threshold_half_open)
+            .field("closed_len", &closed_len)
+            .field("half_open_len", &half_open_len)
+            .field("open_wait", &open_wait)
+            .field(
+                "open_wait_strategy",
+                &open_wait_strategy
+                    .as_ref()
+                    .map(|_| "Some(Box<dyn WaitStrategy>)"),
+            )
             .finish()
+    }
+}
+
+pub trait WaitStrategy: Send + Sync + 'static {
+    fn next_wait(&self, fail_count: u32, open_wait: Duration) -> Duration;
+}
+
+impl<F> WaitStrategy for F
+where
+    F: Fn(u32, Duration) -> Duration + Send + Sync + 'static,
+{
+    fn next_wait(&self, fail_count: u32, open_wait: Duration) -> Duration {
+        self(fail_count, open_wait)
     }
 }
 
@@ -483,9 +515,7 @@ mod tests {
             .closed_len(2)
             .half_open_len(2)
             .open_wait(Duration::from_secs(1))
-            .open_wait_strategy(OpenWaitStrategy::new(Duration::from_secs(5), |_, wait| {
-                wait
-            }))
+            .open_wait_strategy(|_, open_wait| open_wait)
             .build();
 
         let guard = &epoch::pin();
@@ -524,7 +554,7 @@ mod tests {
             Err(Error::Rejected)
         ));
 
-        // Transition to State::HalfOpen(1) on first call after 1.5 sec
+        // Transition to State::HalfOpen(1) on first call after 1 sec (open_wait duration)
         sleep(1500);
         assert!(matches!(recl.call(|| Ok::<(), ()>(())), Ok(())));
         assert!(matches!(
@@ -557,7 +587,7 @@ mod tests {
             Err(Error::Rejected)
         ));
 
-        // Transition to State::HalfOpen(2) on first call after 1.5 sec
+        // Transition to State::HalfOpen(2) on first call after 1 sec (open_wait duration)
         sleep(1500);
         assert!(matches!(recl.call(|| Ok::<(), ()>(())), Ok(())));
         assert!(matches!(
@@ -617,14 +647,14 @@ mod tests {
     #[test]
     fn test_custom_wait() {
         let open_wait = Duration::from_secs(1);
-        let strategy = OpenWaitStrategy::new(Duration::from_secs(5), |fc, wait| {
+        let strategy = |fc, wait: Duration| {
             // simple exponential backoff
             let base: u64 = 2;
             let wait_ms: u64 = wait.as_millis() as u64;
             let next_wait_ms = base.pow(fc) * wait_ms;
 
-            Duration::from_millis(next_wait_ms)
-        });
+            Duration::from_millis(next_wait_ms).min(Duration::from_secs(5))
+        };
 
         // 1, 2, 4, 5, ... 5, ..,
         assert_eq!(strategy.next_wait(0, open_wait), Duration::from_secs(1));
