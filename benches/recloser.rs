@@ -7,7 +7,7 @@ use num_cpus;
 use rayon::prelude::*;
 
 use failsafe::{CircuitBreaker, Config, backoff, failure_policy};
-use recloser::{OpenWaitStrategy, Recloser};
+use recloser::Recloser;
 
 const ITER_C: u64 = 10_000;
 
@@ -38,9 +38,7 @@ fn make_recloser_with_strategy() -> Recloser {
         .closed_len(10)
         .half_open_len(5)
         .open_wait(Duration::from_secs(1))
-        .open_wait_strategy(OpenWaitStrategy::new(Duration::from_secs(2), |_, wait| {
-            wait
-        }))
+        .open_wait_strategy(|_, open_wait| open_wait)
         .build()
 }
 
