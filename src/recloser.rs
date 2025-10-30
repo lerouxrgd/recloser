@@ -275,9 +275,12 @@ impl core::fmt::Debug for Recloser {
             open_wait,
             open_wait_strategy,
             state,
+            #[cfg(feature = "tracing")]
+            state_started_ts,
         } = self;
-        f.debug_struct("Recloser")
-            .field("threshold_closed", &threshold_closed)
+
+        let mut ds = f.debug_struct("Recloser");
+        ds.field("threshold_closed", &threshold_closed)
             .field("threshold_half_open", &threshold_half_open)
             .field("closed_len", &closed_len)
             .field("half_open_len", &half_open_len)
@@ -288,8 +291,12 @@ impl core::fmt::Debug for Recloser {
                     .as_ref()
                     .map(|_| "Some(Box<dyn WaitStrategy>)"),
             )
-            .field("state", &state)
-            .finish()
+            .field("state", &state);
+
+        #[cfg(feature = "tracing")]
+        ds.field("state_started_ts", &state_started_ts);
+
+        ds.finish()
     }
 }
 
