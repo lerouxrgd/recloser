@@ -18,13 +18,13 @@ pub const RECLOSER_EVENT: &str = "recloser_event";
 
 /// A concurrent cirbuit breaker based on `RingBuffer`s that allows or rejects
 /// calls depending on the state it is in.
-#[derive(Debug)]
 pub struct Recloser {
     threshold_closed: f32,
     threshold_half_open: f32,
     closed_len: usize,
     half_open_len: usize,
     open_wait: Duration,
+    open_wait_strategy: Option<Box<dyn WaitStrategy>>,
     state: Atomic<State>,
     #[cfg(feature = "tracing")]
     state_started_ts: AtomicU64,
@@ -81,10 +81,10 @@ impl Recloser {
         // Safety: safe because `Shared::null()` is never used.
         match unsafe { shared.deref() } {
             State::Closed(_) => true,
-            State::HalfOpen(_) => true,
-            _old_state @ State::Open(until) => {
+            State::HalfOpen(_, _) => true,
+            _old_state @ State::Open(until, fc) => {
                 if Instant::now() > *until {
-                    let new_state = State::HalfOpen(RingBuffer::new(self.half_open_len));
+                    let new_state = State::HalfOpen(RingBuffer::new(self.half_open_len), *fc);
                     #[cfg(feature = "tracing")]
                     let new_state_name = new_state.name();
 
@@ -133,7 +133,7 @@ impl Recloser {
             State::Closed(rb) => {
                 rb.set_current(false);
             }
-            _old_state @ State::HalfOpen(rb) => {
+            _old_state @ State::HalfOpen(rb, _) => {
                 let failure_rate = rb.set_current(false);
                 if failure_rate > -1.0 && failure_rate <= self.threshold_half_open {
                     let new_state = State::Closed(RingBuffer::new(self.closed_len));
@@ -171,7 +171,7 @@ impl Recloser {
                     }
                 }
             }
-            State::Open(_) => (),
+            State::Open(_, _) => (),
         };
     }
 
@@ -182,7 +182,7 @@ impl Recloser {
             _old_state @ State::Closed(rb) => {
                 let failure_rate = rb.set_current(true);
                 if failure_rate > -1.0 && failure_rate >= self.threshold_closed {
-                    let new_state = State::Open(Instant::now() + self.open_wait);
+                    let new_state = State::Open(Instant::now() + self.open_wait, 1);
                     #[cfg(feature = "tracing")]
                     let new_state_name = new_state.name();
 
@@ -217,10 +217,15 @@ impl Recloser {
                     }
                 }
             }
-            _old_state @ State::HalfOpen(rb) => {
+            _old_state @ State::HalfOpen(rb, fc) => {
                 let failure_rate = rb.set_current(true);
                 if failure_rate > -1.0 && failure_rate >= self.threshold_half_open {
-                    let new_state = State::Open(Instant::now() + self.open_wait);
+                    let new_wait = match self.open_wait_strategy.as_ref() {
+                        None => Instant::now() + self.open_wait,
+                        Some(strategy) => Instant::now() + strategy.next_wait(*fc, self.open_wait),
+                    };
+                    let new_state = State::Open(new_wait, fc + 1);
+
                     #[cfg(feature = "tracing")]
                     let new_state_name = new_state.name();
 
@@ -255,8 +260,43 @@ impl Recloser {
                     }
                 }
             }
-            State::Open(_) => (),
+            State::Open(_, _) => (),
         };
+    }
+}
+
+impl core::fmt::Debug for Recloser {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+        let Recloser {
+            threshold_closed,
+            threshold_half_open,
+            closed_len,
+            half_open_len,
+            open_wait,
+            open_wait_strategy,
+            state,
+            #[cfg(feature = "tracing")]
+            state_started_ts,
+        } = self;
+
+        let mut ds = f.debug_struct("Recloser");
+        ds.field("threshold_closed", &threshold_closed)
+            .field("threshold_half_open", &threshold_half_open)
+            .field("closed_len", &closed_len)
+            .field("half_open_len", &half_open_len)
+            .field("open_wait", &open_wait)
+            .field(
+                "open_wait_strategy",
+                &open_wait_strategy
+                    .as_ref()
+                    .map(|_| "Some(Box<dyn WaitStrategy>)"),
+            )
+            .field("state", &state);
+
+        #[cfg(feature = "tracing")]
+        ds.field("state_started_ts", &state_started_ts);
+
+        ds.finish()
     }
 }
 
@@ -265,11 +305,12 @@ impl Recloser {
 enum State {
     /// Allows calls until a failure_rate threshold is reached.
     Closed(RingBuffer),
-    /// Rejects all calls until the future [`Instant`] is reached.
-    Open(Instant),
+    /// Rejects all calls until the future [`Instant`] is reached. Carries the seed for flap count.
+    Open(Instant, u32),
     /// Allows calls until the underlying [`RingBuffer`] is full,
     /// then calculates a failure_rate based on which the next transition will happen.
-    HalfOpen(RingBuffer),
+    /// Carries flap_count - number of times the circuit breaker transitioned between Open <-> HalfOpen
+    HalfOpen(RingBuffer, u32),
 }
 
 #[cfg(feature = "tracing")]
@@ -277,20 +318,20 @@ impl State {
     fn name(&self) -> &'static str {
         match self {
             State::Closed(_) => "Closed",
-            State::Open(_) => "Open",
-            State::HalfOpen(_) => "HalfOpen",
+            State::Open(_, _) => "Open",
+            State::HalfOpen(_, _) => "HalfOpen",
         }
     }
 }
 
 /// A helper struct to build customized [`Recloser`].
-#[derive(Debug)]
 pub struct RecloserBuilder {
     threshold_closed: f32,
     threshold_half_open: f32,
     closed_len: usize,
     half_open_len: usize,
     open_wait: Duration,
+    open_wait_strategy: Option<Box<dyn WaitStrategy>>,
 }
 
 impl RecloserBuilder {
@@ -301,6 +342,7 @@ impl RecloserBuilder {
             closed_len: 100,
             half_open_len: 10,
             open_wait: Duration::from_secs(30),
+            open_wait_strategy: None,
         }
     }
 
@@ -335,6 +377,11 @@ impl RecloserBuilder {
         self
     }
 
+    pub fn open_wait_strategy<F: WaitStrategy>(mut self, open_wait_strategy: F) -> Self {
+        self.open_wait_strategy = Some(Box::new(open_wait_strategy));
+        self
+    }
+
     pub fn build(self) -> Recloser {
         let state = State::Closed(RingBuffer::new(self.closed_len));
 
@@ -357,6 +404,7 @@ impl RecloserBuilder {
             closed_len: self.closed_len,
             half_open_len: self.half_open_len,
             open_wait: self.open_wait,
+            open_wait_strategy: self.open_wait_strategy,
             state: Atomic::new(state),
             #[cfg(feature = "tracing")]
             state_started_ts: AtomicU64::new(state_started),
@@ -367,6 +415,45 @@ impl RecloserBuilder {
 impl Default for Recloser {
     fn default() -> Self {
         Recloser::custom().build()
+    }
+}
+
+impl core::fmt::Debug for RecloserBuilder {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+        let RecloserBuilder {
+            threshold_closed,
+            threshold_half_open,
+            closed_len,
+            half_open_len,
+            open_wait,
+            open_wait_strategy,
+        } = self;
+        f.debug_struct("RecloserBuilder")
+            .field("threshold_closed", &threshold_closed)
+            .field("threshold_half_open", &threshold_half_open)
+            .field("closed_len", &closed_len)
+            .field("half_open_len", &half_open_len)
+            .field("open_wait", &open_wait)
+            .field(
+                "open_wait_strategy",
+                &open_wait_strategy
+                    .as_ref()
+                    .map(|_| "Some(Box<dyn WaitStrategy>)"),
+            )
+            .finish()
+    }
+}
+
+pub trait WaitStrategy: Send + Sync + 'static {
+    fn next_wait(&self, fail_count: u32, open_wait: Duration) -> Duration;
+}
+
+impl<F> WaitStrategy for F
+where
+    F: Fn(u32, Duration) -> Duration + Send + Sync + 'static,
+{
+    fn next_wait(&self, fail_count: u32, open_wait: Duration) -> Duration {
+        self(fail_count, open_wait)
     }
 }
 
@@ -425,6 +512,29 @@ mod tests {
 
         let guard = &epoch::pin();
 
+        assert_state_transitions(&recl, guard);
+    }
+
+    #[test]
+    fn recloser_correctness_with_strategy() {
+        let recl = Recloser::custom()
+            .error_rate(0.5)
+            .closed_len(2)
+            .half_open_len(2)
+            .open_wait(Duration::from_secs(1))
+            .open_wait_strategy(|_, open_wait| open_wait)
+            .build();
+
+        let guard = &epoch::pin();
+
+        assert_state_transitions(&recl, guard);
+    }
+
+    fn assert_state_transitions(recl: &Recloser, guard: &Guard) {
+        //  result:  e e e x ____ ✓ e e x  ____ ✓ ✓ ✓
+        //   state:  c c o o      h h o o       h h c
+        //    flap:  - - 1 1      1 1 2 2       2 2 -
+
         // Fill the State::Closed ring buffer
         for _ in 0..2 {
             assert!(matches!(
@@ -437,34 +547,63 @@ mod tests {
             ));
         }
 
-        // Transition to State::Open on next call
+        // Transition to State::Open(1) on next call
         assert!(matches!(
             recl.call(|| Err::<(), ()>(())),
             Err(Error::Inner(()))
         ));
         assert!(matches!(
             unsafe { recl.state.load(Relaxed, guard).deref() },
-            State::Open(_)
+            State::Open(_, 1)
         ));
         assert!(matches!(
             recl.call(|| Err::<(), ()>(())),
             Err(Error::Rejected)
         ));
 
-        // Transition to State::HalfOpen on first call after 1 sec
+        // Transition to State::HalfOpen(1) on first call after 1 sec (open_wait duration)
         sleep(1500);
         assert!(matches!(recl.call(|| Ok::<(), ()>(())), Ok(())));
         assert!(matches!(
             unsafe { recl.state.load(Relaxed, guard).deref() },
-            State::HalfOpen(_)
+            State::HalfOpen(_, 1)
         ));
 
-        // Fill the State::HalfOpen ring buffer
+        // Fill the State::HaflOpen ring buffer
+        assert!(matches!(
+            recl.call(|| Err::<(), ()>(())),
+            Err(Error::Inner(()))
+        ));
+        assert!(matches!(
+            unsafe { recl.state.load(Relaxed, guard).deref() },
+            State::HalfOpen(_, 1)
+        ));
+
+        // Transition to state State::Open(2) when failure rate above threshold
+        assert!(matches!(
+            recl.call(|| Err::<(), ()>(())),
+            Err(Error::Inner(()))
+        ));
+        assert!(matches!(
+            unsafe { recl.state.load(Relaxed, guard).deref() },
+            State::Open(_, 2)
+        ));
+
+        assert!(matches!(
+            recl.call(|| Err::<(), ()>(())),
+            Err(Error::Rejected)
+        ));
+
+        // Transition to State::HalfOpen(2) on first call after 1 sec (open_wait duration)
+        sleep(1500);
         assert!(matches!(recl.call(|| Ok::<(), ()>(())), Ok(())));
         assert!(matches!(
             unsafe { recl.state.load(Relaxed, guard).deref() },
-            State::HalfOpen(_)
+            State::HalfOpen(_, 2)
         ));
+
+        // Fill the State::HaflOpen ring buffer
+        assert!(matches!(recl.call(|| Ok::<(), ()>(())), Ok(())));
 
         // Transition to State::Closed when failure rate below threshold
         assert!(matches!(recl.call(|| Ok::<(), ()>(())), Ok(())));
@@ -510,5 +649,25 @@ mod tests {
         for handle in handles {
             handle.join().unwrap();
         }
+    }
+
+    #[test]
+    fn test_custom_wait() {
+        let open_wait = Duration::from_secs(1);
+        let strategy = |fc, wait: Duration| {
+            // simple exponential backoff
+            let base: u64 = 2;
+            let wait_ms: u64 = wait.as_millis() as u64;
+            let next_wait_ms = base.pow(fc) * wait_ms;
+
+            Duration::from_millis(next_wait_ms).min(Duration::from_secs(5))
+        };
+
+        // 1, 2, 4, 5, ... 5, ..,
+        assert_eq!(strategy.next_wait(0, open_wait), Duration::from_secs(1));
+        assert_eq!(strategy.next_wait(1, open_wait), Duration::from_secs(2));
+        assert_eq!(strategy.next_wait(2, open_wait), Duration::from_secs(4));
+        assert_eq!(strategy.next_wait(4, open_wait), Duration::from_secs(5));
+        assert_eq!(strategy.next_wait(10, open_wait), Duration::from_secs(5));
     }
 }
