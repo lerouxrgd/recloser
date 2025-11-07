@@ -652,6 +652,54 @@ mod tests {
     }
 
     #[test]
+    fn test_filling_blindspot_fail() {
+        let recl = Recloser::custom()
+            .error_rate(0.5)
+            .closed_len(10)
+            .half_open_len(5)
+            .open_wait(Duration::from_secs(1))
+            .build();
+
+        for _ in 0..10 {
+            _ = recl.call(|| Err::<(), ()>(()));
+        }
+        // at this point, rng buffer is filled, the error rate is 0.9, yet if next call is a success, we miss
+        // the 'filling' point where rate can be calculated and used
+        _ = recl.call(|| Ok::<(), ()>(()));
+
+        assert!(matches!(recl.call(|| Ok::<(), ()>(())), Ok(())));
+
+        // all subsequent calls will be permitted
+        for _ in 0..100 {
+            assert!(matches!(recl.call(|| Ok::<(), ()>(())), Ok(())));
+        }
+    }
+
+    #[test]
+    fn test_filling_blindspot_success() {
+        let recl = Recloser::custom()
+            .error_rate(0.5)
+            .closed_len(10)
+            .half_open_len(5)
+            .open_wait(Duration::from_secs(1))
+            .build();
+
+        for i in 0..10 {
+            if i < 5 {
+                _ = recl.call(|| Ok::<(), ()>(()));
+            } else {
+                _ = recl.call(|| Err::<(), ()>(()));
+            }
+        }
+        // at this point, rng buffer is filled, the error rate is 0.9, and it takes another error to trip
+        _ = recl.call(|| Err::<(), ()>(()));
+        assert!(matches!(
+            recl.call(|| Err::<(), ()>(())),
+            Err(Error::Rejected)
+        ));
+    }
+
+    #[test]
     fn test_custom_wait() {
         let open_wait = Duration::from_secs(1);
         let strategy = |fc, wait: Duration| {
