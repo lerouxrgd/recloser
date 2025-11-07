@@ -669,7 +669,7 @@ mod tests {
 
         assert!(matches!(recl.call(|| Ok::<(), ()>(())), Ok(())));
 
-        // all subsequent calls will be permitted
+        // all subsequent calls will be permitted ?!
         for _ in 0..100 {
             assert!(matches!(recl.call(|| Ok::<(), ()>(())), Ok(())));
         }
