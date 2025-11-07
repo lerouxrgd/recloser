@@ -663,7 +663,7 @@ mod tests {
         for _ in 0..10 {
             _ = recl.call(|| Err::<(), ()>(()));
         }
-        // at this point, rng buffer is filled, the error rate is 0.9, yet if next call is a success, we miss
+        // at this point, rng buffer is filled, the error rate is 1.0, yet if next call is a success, we miss
         // the 'filling' point where rate can be calculated and used
         _ = recl.call(|| Ok::<(), ()>(()));
 
@@ -691,7 +691,7 @@ mod tests {
                 _ = recl.call(|| Err::<(), ()>(()));
             }
         }
-        // at this point, rng buffer is filled, the error rate is 0.9, and it takes another error to trip
+        // at this point, rng buffer is filled, the error rate is 0.5, and it takes another error to trip
         _ = recl.call(|| Err::<(), ()>(()));
         assert!(matches!(
             recl.call(|| Err::<(), ()>(())),
