@@ -9,7 +9,7 @@ use std::time::Instant;
 #[cfg(feature = "tracing")]
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crossbeam_epoch::{self as epoch, Atomic, Guard, Owned};
+use crossbeam_epoch::{self as epoch, Atomic, Guard, Owned, Shared};
 
 use crate::error::{AnyError, Error, ErrorPredicate};
 use crate::ring_buffer::RingBuffer;
@@ -130,45 +130,20 @@ impl Recloser {
         let shared = self.state.load(Ordering::Acquire, guard);
         // Safety: safe because `Shared::null()` is never used.
         match unsafe { shared.deref() } {
-            State::Closed(rb) => {
-                rb.set_current(false);
+            _old_state @ State::Closed(rb) => {
+                let failure_rate = rb.set_current(false);
+                if failure_rate > -1.0 && failure_rate >= self.threshold_closed {
+                    self.transition_state(guard, _old_state, shared, || {
+                        State::Open(Instant::now() + self.open_wait, 1)
+                    });
+                }
             }
             _old_state @ State::HalfOpen(rb, _) => {
                 let failure_rate = rb.set_current(false);
                 if failure_rate > -1.0 && failure_rate <= self.threshold_half_open {
-                    let new_state = State::Closed(RingBuffer::new(self.closed_len));
-                    #[cfg(feature = "tracing")]
-                    let new_state_name = new_state.name();
-
-                    let _swapped = self.state.compare_exchange(
-                        shared,
-                        Owned::new(new_state),
-                        Ordering::Release,
-                        Ordering::Relaxed,
-                        guard,
-                    );
-
-                    #[cfg(feature = "tracing")]
-                    if _swapped.is_ok() {
-                        let swap_ts = SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_secs();
-                        let old_state_ts = self.state_started_ts.swap(swap_ts, Ordering::Relaxed);
-                        tracing::event!(
-                            target: RECLOSER_EVENT,
-                            tracing::Level::INFO,
-                            state = _old_state.name(),
-                            ended_ts = swap_ts,
-                            duration_sec = swap_ts - old_state_ts
-                        );
-                        tracing::event!(
-                            target: RECLOSER_EVENT,
-                            tracing::Level::INFO,
-                            state = new_state_name,
-                            started_ts = swap_ts
-                        );
-                    }
+                    self.transition_state(guard, _old_state, shared, || {
+                        State::Closed(RingBuffer::new(self.closed_len))
+                    });
                 }
             }
             State::Open(_, _) => (),
@@ -182,86 +157,72 @@ impl Recloser {
             _old_state @ State::Closed(rb) => {
                 let failure_rate = rb.set_current(true);
                 if failure_rate > -1.0 && failure_rate >= self.threshold_closed {
-                    let new_state = State::Open(Instant::now() + self.open_wait, 1);
-                    #[cfg(feature = "tracing")]
-                    let new_state_name = new_state.name();
-
-                    let _swapped = self.state.compare_exchange(
-                        shared,
-                        Owned::new(new_state),
-                        Ordering::Release,
-                        Ordering::Relaxed,
-                        guard,
-                    );
-
-                    #[cfg(feature = "tracing")]
-                    if _swapped.is_ok() {
-                        let swap_ts = SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_secs();
-                        let old_state_ts = self.state_started_ts.swap(swap_ts, Ordering::Relaxed);
-                        tracing::event!(
-                            target: RECLOSER_EVENT,
-                            tracing::Level::INFO,
-                            state = _old_state.name(),
-                            ended_ts = swap_ts,
-                            duration_sec = swap_ts - old_state_ts
-                        );
-                        tracing::event!(
-                            target: RECLOSER_EVENT,
-                            tracing::Level::INFO,
-                            state = new_state_name,
-                            started_ts = swap_ts
-                        );
-                    }
+                    self.transition_state(guard, _old_state, shared, || {
+                        State::Open(Instant::now() + self.open_wait, 1)
+                    });
                 }
             }
             _old_state @ State::HalfOpen(rb, fc) => {
                 let failure_rate = rb.set_current(true);
                 if failure_rate > -1.0 && failure_rate >= self.threshold_half_open {
-                    let new_wait = match self.open_wait_strategy.as_ref() {
-                        None => Instant::now() + self.open_wait,
-                        Some(strategy) => Instant::now() + strategy.next_wait(*fc, self.open_wait),
-                    };
-                    let new_state = State::Open(new_wait, fc + 1);
-
-                    #[cfg(feature = "tracing")]
-                    let new_state_name = new_state.name();
-
-                    let _swapped = self.state.compare_exchange(
-                        shared,
-                        Owned::new(new_state),
-                        Ordering::Release,
-                        Ordering::Relaxed,
-                        guard,
-                    );
-
-                    #[cfg(feature = "tracing")]
-                    if _swapped.is_ok() {
-                        let swap_ts = SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_secs();
-                        let old_state_ts = self.state_started_ts.swap(swap_ts, Ordering::Relaxed);
-                        tracing::event!(
-                            target: RECLOSER_EVENT,
-                            tracing::Level::INFO,
-                            state = _old_state.name(),
-                            ended_ts = swap_ts,
-                            duration_sec = swap_ts - old_state_ts
-                        );
-                        tracing::event!(
-                            target: RECLOSER_EVENT,
-                            tracing::Level::INFO,
-                            state = new_state_name,
-                            started_ts = swap_ts
-                        );
-                    }
+                    self.transition_state(guard, _old_state, shared, || {
+                        let new_wait = match self.open_wait_strategy.as_ref() {
+                            None => Instant::now() + self.open_wait,
+                            Some(strategy) => {
+                                Instant::now() + strategy.next_wait(*fc, self.open_wait)
+                            }
+                        };
+                        State::Open(new_wait, fc + 1)
+                    });
                 }
             }
             State::Open(_, _) => (),
         };
+    }
+
+    fn transition_state<F>(
+        &self,
+        guard: &Guard,
+        _old_state: &State,
+        shared: Shared<State>,
+        transition: F,
+    ) where
+        F: FnOnce() -> State,
+    {
+        let new_state = transition();
+
+        #[cfg(feature = "tracing")]
+        let new_state_name = new_state.name();
+
+        let _swapped = self.state.compare_exchange(
+            shared,
+            Owned::new(new_state),
+            Ordering::Release,
+            Ordering::Relaxed,
+            guard,
+        );
+
+        #[cfg(feature = "tracing")]
+        if _swapped.is_ok() {
+            let swap_ts = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            let old_state_ts = self.state_started_ts.swap(swap_ts, Ordering::Relaxed);
+            tracing::event!(
+                target: RECLOSER_EVENT,
+                tracing::Level::INFO,
+                state = _old_state.name(),
+                ended_ts = swap_ts,
+                duration_sec = swap_ts - old_state_ts
+            );
+            tracing::event!(
+                target: RECLOSER_EVENT,
+                tracing::Level::INFO,
+                state = new_state_name,
+                started_ts = swap_ts
+            );
+        }
     }
 }
 
@@ -652,7 +613,7 @@ mod tests {
     }
 
     #[test]
-    fn test_filling_blindspot_fail() {
+    fn test_ring_buffer_filling_on_success() {
         let recl = Recloser::custom()
             .error_rate(0.5)
             .closed_len(10)
@@ -663,20 +624,19 @@ mod tests {
         for _ in 0..10 {
             _ = recl.call(|| Err::<(), ()>(()));
         }
-        // at this point, rng buffer is filled, the error rate is 1.0, yet if next call is a success, we miss
-        // the 'filling' point where rate can be calculated and used
+        // at this point, rng buffer is filled, the error rate is 1.0, regardless of the outcome
+        // of next call, the cb has to trip
         _ = recl.call(|| Ok::<(), ()>(()));
 
-        assert!(matches!(recl.call(|| Ok::<(), ()>(())), Ok(())));
-
-        // all subsequent calls will be permitted ?!
-        for _ in 0..100 {
-            assert!(matches!(recl.call(|| Ok::<(), ()>(())), Ok(())));
-        }
+        // cb tripped
+        assert!(matches!(
+            recl.call(|| Err::<(), ()>(())),
+            Err(Error::Rejected)
+        ));
     }
 
     #[test]
-    fn test_filling_blindspot_success() {
+    fn test_ring_buffer_filling_on_error() {
         let recl = Recloser::custom()
             .error_rate(0.5)
             .closed_len(10)
