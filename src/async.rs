@@ -157,4 +157,43 @@ mod tests {
 
         assert!(matches!(task::block_on(future), Err(Error::Rejected)));
     }
+
+    #[cfg(feature = "metrics")]
+    #[test]
+    fn async_metrics_emitted() {
+        use crate::test_metrics::{assert_counter, assert_gauge};
+        use metrics_util::debugging::DebuggingRecorder;
+
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+
+        metrics::with_local_recorder(&recorder, || {
+            let recloser = Recloser::custom()
+                .name("async_cb")
+                .closed_len(2)
+                .half_open_len(2)
+                .open_wait(Duration::from_secs(1))
+                .build();
+            let recloser = AsyncRecloser::from(recloser);
+
+            // Success
+            let future = future::ready::<Result<(), ()>>(Ok(()));
+            task::block_on(recloser.call(future)).unwrap();
+            assert_counter(&snapshotter, "success", 1);
+
+            // Errors → open
+            let future = future::ready::<Result<(), ()>>(Err(()));
+            let _ = task::block_on(recloser.call(future));
+            let future = future::ready::<Result<(), ()>>(Err(()));
+            let _ = task::block_on(recloser.call(future));
+            assert_counter(&snapshotter, "error", 2);
+            assert_gauge(&snapshotter, "open", 1.0);
+
+            // Rejected
+            let future = future::ready::<Result<(), ()>>(Ok(()));
+            let result = task::block_on(recloser.call(future));
+            assert!(matches!(result, Err(Error::Rejected)));
+            assert_counter(&snapshotter, "not_permitted", 1);
+        });
+    }
 }

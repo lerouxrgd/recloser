@@ -26,8 +26,22 @@ pub struct Recloser {
     open_wait: Duration,
     open_wait_strategy: Option<Box<dyn WaitStrategy>>,
     state: Atomic<State>,
+    #[cfg(any(feature = "tracing", feature = "metrics"))]
+    name: &'static str,
+    #[cfg(feature = "metrics")]
+    metrics: MetricsHandles,
     #[cfg(feature = "tracing")]
     state_started_ts: AtomicU64,
+}
+
+#[cfg(feature = "metrics")]
+struct MetricsHandles {
+    calls_success: metrics::Counter,
+    calls_error: metrics::Counter,
+    calls_not_permitted: metrics::Counter,
+    state_closed: metrics::Gauge,
+    state_open: metrics::Gauge,
+    state_half_open: metrics::Gauge,
 }
 
 impl Recloser {
@@ -85,6 +99,8 @@ impl Recloser {
             _old_state @ State::Open(until, fc) => {
                 if Instant::now() > *until {
                     let new_state = State::HalfOpen(RingBuffer::new(self.half_open_len), *fc);
+                    #[cfg(feature = "metrics")]
+                    let new_metric_name = new_state.metric_name();
                     #[cfg(feature = "tracing")]
                     let new_state_name = new_state.name();
 
@@ -96,6 +112,11 @@ impl Recloser {
                         guard,
                     );
 
+                    #[cfg(feature = "metrics")]
+                    if _swapped.is_ok() {
+                        self.emit_state_gauge(new_metric_name);
+                    }
+
                     #[cfg(feature = "tracing")]
                     if _swapped.is_ok() {
                         let swap_ts = SystemTime::now()
@@ -106,6 +127,7 @@ impl Recloser {
                         tracing::event!(
                             target: RECLOSER_EVENT,
                             tracing::Level::INFO,
+                            name = self.name,
                             state = _old_state.name(),
                             ended_ts = swap_ts,
                             duration_sec = swap_ts - old_state_ts
@@ -113,6 +135,7 @@ impl Recloser {
                         tracing::event!(
                             target: RECLOSER_EVENT,
                             tracing::Level::INFO,
+                            name = self.name,
                             state = new_state_name,
                             started_ts = swap_ts
                         );
@@ -120,6 +143,8 @@ impl Recloser {
 
                     true
                 } else {
+                    #[cfg(feature = "metrics")]
+                    self.metrics.calls_not_permitted.increment(1);
                     false
                 }
             }
@@ -127,6 +152,8 @@ impl Recloser {
     }
 
     pub(crate) fn on_success(&self, guard: &Guard) {
+        #[cfg(feature = "metrics")]
+        self.metrics.calls_success.increment(1);
         let shared = self.state.load(Ordering::Acquire, guard);
         // Safety: safe because `Shared::null()` is never used.
         match unsafe { shared.deref() } {
@@ -151,6 +178,8 @@ impl Recloser {
     }
 
     pub(crate) fn on_error(&self, guard: &Guard) {
+        #[cfg(feature = "metrics")]
+        self.metrics.calls_error.increment(1);
         let shared = self.state.load(Ordering::Acquire, guard);
         // Safety: safe because `Shared::null()` is never used.
         match unsafe { shared.deref() } {
@@ -180,6 +209,13 @@ impl Recloser {
         };
     }
 
+    #[cfg(feature = "metrics")]
+    fn emit_state_gauge(&self, new_state: &'static str) {
+        self.metrics.state_closed.set(if new_state == "closed" { 1.0 } else { 0.0 });
+        self.metrics.state_open.set(if new_state == "open" { 1.0 } else { 0.0 });
+        self.metrics.state_half_open.set(if new_state == "half_open" { 1.0 } else { 0.0 });
+    }
+
     fn transition_state<F>(
         &self,
         guard: &Guard,
@@ -191,6 +227,8 @@ impl Recloser {
     {
         let new_state = transition();
 
+        #[cfg(feature = "metrics")]
+        let new_metric_name = new_state.metric_name();
         #[cfg(feature = "tracing")]
         let new_state_name = new_state.name();
 
@@ -202,6 +240,11 @@ impl Recloser {
             guard,
         );
 
+        #[cfg(feature = "metrics")]
+        if _swapped.is_ok() {
+            self.emit_state_gauge(new_metric_name);
+        }
+
         #[cfg(feature = "tracing")]
         if _swapped.is_ok() {
             let swap_ts = SystemTime::now()
@@ -212,6 +255,7 @@ impl Recloser {
             tracing::event!(
                 target: RECLOSER_EVENT,
                 tracing::Level::INFO,
+                name = self.name,
                 state = _old_state.name(),
                 ended_ts = swap_ts,
                 duration_sec = swap_ts - old_state_ts
@@ -219,6 +263,7 @@ impl Recloser {
             tracing::event!(
                 target: RECLOSER_EVENT,
                 tracing::Level::INFO,
+                name = self.name,
                 state = new_state_name,
                 started_ts = swap_ts
             );
@@ -236,11 +281,19 @@ impl core::fmt::Debug for Recloser {
             open_wait,
             open_wait_strategy,
             state,
+            #[cfg(any(feature = "tracing", feature = "metrics"))]
+            name,
+            #[cfg(feature = "metrics")]
+            metrics: _,
             #[cfg(feature = "tracing")]
             state_started_ts,
         } = self;
 
         let mut ds = f.debug_struct("Recloser");
+
+        #[cfg(any(feature = "tracing", feature = "metrics"))]
+        ds.field("name", &name);
+
         ds.field("threshold_closed", &threshold_closed)
             .field("threshold_half_open", &threshold_half_open)
             .field("closed_len", &closed_len)
@@ -274,13 +327,22 @@ enum State {
     HalfOpen(RingBuffer, u32),
 }
 
-#[cfg(feature = "tracing")]
 impl State {
+    #[cfg(feature = "tracing")]
     fn name(&self) -> &'static str {
         match self {
             State::Closed(_) => "Closed",
             State::Open(_, _) => "Open",
             State::HalfOpen(_, _) => "HalfOpen",
+        }
+    }
+
+    #[cfg(feature = "metrics")]
+    fn metric_name(&self) -> &'static str {
+        match self {
+            State::Closed(_) => "closed",
+            State::Open(_, _) => "open",
+            State::HalfOpen(_, _) => "half_open",
         }
     }
 }
@@ -293,6 +355,8 @@ pub struct RecloserBuilder {
     half_open_len: usize,
     open_wait: Duration,
     open_wait_strategy: Option<Box<dyn WaitStrategy>>,
+    #[cfg(any(feature = "tracing", feature = "metrics"))]
+    name: &'static str,
 }
 
 impl RecloserBuilder {
@@ -304,7 +368,16 @@ impl RecloserBuilder {
             half_open_len: 10,
             open_wait: Duration::from_secs(30),
             open_wait_strategy: None,
+            #[cfg(any(feature = "tracing", feature = "metrics"))]
+            name: "default",
         }
+    }
+
+    /// Set the name used to identify this circuit breaker in metrics and tracing events.
+    #[cfg(any(feature = "tracing", feature = "metrics"))]
+    pub fn name(mut self, name: &'static str) -> Self {
+        self.name = name;
+        self
     }
 
     pub fn error_rate(mut self, threshold: f32) -> Self {
@@ -355,11 +428,22 @@ impl RecloserBuilder {
         tracing::event!(
             target: RECLOSER_EVENT,
             tracing::Level::INFO,
+            name = self.name,
             state = state.name(),
             started_ts = state_started
         );
 
-        Recloser {
+        #[cfg(feature = "metrics")]
+        let metrics = MetricsHandles {
+            calls_success: metrics::counter!("recloser_calls_total", "name" => self.name, "outcome" => "success"),
+            calls_error: metrics::counter!("recloser_calls_total", "name" => self.name, "outcome" => "error"),
+            calls_not_permitted: metrics::counter!("recloser_calls_total", "name" => self.name, "outcome" => "not_permitted"),
+            state_closed: metrics::gauge!("recloser_state", "name" => self.name, "state" => "closed"),
+            state_open: metrics::gauge!("recloser_state", "name" => self.name, "state" => "open"),
+            state_half_open: metrics::gauge!("recloser_state", "name" => self.name, "state" => "half_open"),
+        };
+
+        let recloser = Recloser {
             threshold_closed: self.threshold_closed,
             threshold_half_open: self.threshold_half_open,
             closed_len: self.closed_len,
@@ -367,9 +451,18 @@ impl RecloserBuilder {
             open_wait: self.open_wait,
             open_wait_strategy: self.open_wait_strategy,
             state: Atomic::new(state),
+            #[cfg(any(feature = "tracing", feature = "metrics"))]
+            name: self.name,
+            #[cfg(feature = "metrics")]
+            metrics,
             #[cfg(feature = "tracing")]
             state_started_ts: AtomicU64::new(state_started),
-        }
+        };
+
+        #[cfg(feature = "metrics")]
+        recloser.emit_state_gauge("closed");
+
+        recloser
     }
 }
 
@@ -388,9 +481,15 @@ impl core::fmt::Debug for RecloserBuilder {
             half_open_len,
             open_wait,
             open_wait_strategy,
+            #[cfg(any(feature = "tracing", feature = "metrics"))]
+            name,
         } = self;
-        f.debug_struct("RecloserBuilder")
-            .field("threshold_closed", &threshold_closed)
+        let mut ds = f.debug_struct("RecloserBuilder");
+
+        #[cfg(any(feature = "tracing", feature = "metrics"))]
+        ds.field("name", &name);
+
+        ds.field("threshold_closed", &threshold_closed)
             .field("threshold_half_open", &threshold_half_open)
             .field("closed_len", &closed_len)
             .field("half_open_len", &half_open_len)
@@ -677,5 +776,45 @@ mod tests {
         assert_eq!(strategy.next_wait(2, open_wait), Duration::from_secs(4));
         assert_eq!(strategy.next_wait(4, open_wait), Duration::from_secs(5));
         assert_eq!(strategy.next_wait(10, open_wait), Duration::from_secs(5));
+    }
+
+    #[cfg(feature = "metrics")]
+    #[test]
+    fn metrics_emitted_on_call() {
+        use crate::test_metrics::{assert_counter, assert_gauge};
+        use metrics_util::debugging::DebuggingRecorder;
+
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+
+        metrics::with_local_recorder(&recorder, || {
+            let recl = Recloser::custom()
+                .name("test_cb")
+                .closed_len(2)
+                .half_open_len(2)
+                .open_wait(Duration::from_secs(1))
+                .build();
+
+            // Initial build emits closed=1
+            assert_gauge(&snapshotter, "closed", 1.0);
+            assert_gauge(&snapshotter, "open", 0.0);
+            assert_gauge(&snapshotter, "half_open", 0.0);
+
+            // Successful call increments counter
+            let _ = recl.call(|| Ok::<_, ()>(()));
+            assert_counter(&snapshotter, "success", 1);
+
+            // Failed calls → open state
+            let _ = recl.call(|| Err::<(), _>(()));
+            let _ = recl.call(|| Err::<(), _>(()));
+            assert_counter(&snapshotter, "error", 2);
+            assert_gauge(&snapshotter, "open", 1.0);
+            assert_gauge(&snapshotter, "closed", 0.0);
+
+            // Rejected call increments not_permitted
+            let result: Result<(), Error<()>> = recl.call(|| Ok(()));
+            assert!(matches!(result, Err(Error::Rejected)));
+            assert_counter(&snapshotter, "not_permitted", 1);
+        });
     }
 }
