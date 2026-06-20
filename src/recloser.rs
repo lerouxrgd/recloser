@@ -18,48 +18,6 @@ use crate::ring_buffer::RingBuffer;
 
 pub const RECLOSER_EVENT: &str = "recloser_event";
 
-/// Emit a state-entered tracing event, including `name` only when one is set.
-#[cfg(feature = "tracing")]
-fn emit_state_started(name: Option<&str>, state: &'static str, started_ts: u64) {
-    match name {
-        Some(name) => tracing::event!(
-            target: RECLOSER_EVENT,
-            tracing::Level::INFO,
-            name,
-            state,
-            started_ts
-        ),
-        None => tracing::event!(
-            target: RECLOSER_EVENT,
-            tracing::Level::INFO,
-            state,
-            started_ts
-        ),
-    }
-}
-
-/// Emit a state-exited tracing event, including `name` only when one is set.
-#[cfg(feature = "tracing")]
-fn emit_state_ended(name: Option<&str>, state: &'static str, ended_ts: u64, duration_sec: u64) {
-    match name {
-        Some(name) => tracing::event!(
-            target: RECLOSER_EVENT,
-            tracing::Level::INFO,
-            name,
-            state,
-            ended_ts,
-            duration_sec
-        ),
-        None => tracing::event!(
-            target: RECLOSER_EVENT,
-            tracing::Level::INFO,
-            state,
-            ended_ts,
-            duration_sec
-        ),
-    }
-}
-
 /// A concurrent cirbuit breaker based on `RingBuffer`s that allows or rejects
 /// calls depending on the state it is in.
 pub struct Recloser {
@@ -251,6 +209,48 @@ impl Recloser {
     }
 }
 
+/// Emit a state-entered tracing event, including `name` only when one is set.
+#[cfg(feature = "tracing")]
+fn emit_state_started(name: Option<&str>, state: &'static str, started_ts: u64) {
+    match name {
+        Some(name) => tracing::event!(
+            target: RECLOSER_EVENT,
+            tracing::Level::INFO,
+            name,
+            state,
+            started_ts
+        ),
+        None => tracing::event!(
+            target: RECLOSER_EVENT,
+            tracing::Level::INFO,
+            state,
+            started_ts
+        ),
+    }
+}
+
+/// Emit a state-exited tracing event, including `name` only when one is set.
+#[cfg(feature = "tracing")]
+fn emit_state_ended(name: Option<&str>, state: &'static str, ended_ts: u64, duration_sec: u64) {
+    match name {
+        Some(name) => tracing::event!(
+            target: RECLOSER_EVENT,
+            tracing::Level::INFO,
+            name,
+            state,
+            ended_ts,
+            duration_sec
+        ),
+        None => tracing::event!(
+            target: RECLOSER_EVENT,
+            tracing::Level::INFO,
+            state,
+            ended_ts,
+            duration_sec
+        ),
+    }
+}
+
 impl core::fmt::Debug for Recloser {
     fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
         let Recloser {
@@ -315,6 +315,8 @@ impl State {
         }
     }
 }
+
+////////////////////////////////////////////////////////////////////////////////////////
 
 /// A helper struct to build customized [`Recloser`].
 pub struct RecloserBuilder {
