@@ -1,6 +1,8 @@
 #[cfg(test)]
 use fake_clock::FakeClock as Instant;
 #[cfg(feature = "tracing")]
+use std::borrow::Cow;
+#[cfg(feature = "tracing")]
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -16,6 +18,48 @@ use crate::ring_buffer::RingBuffer;
 
 pub const RECLOSER_EVENT: &str = "recloser_event";
 
+/// Emit a state-entered tracing event, including `name` only when one is set.
+#[cfg(feature = "tracing")]
+fn emit_state_started(name: Option<&str>, state: &'static str, started_ts: u64) {
+    match name {
+        Some(name) => tracing::event!(
+            target: RECLOSER_EVENT,
+            tracing::Level::INFO,
+            name,
+            state,
+            started_ts
+        ),
+        None => tracing::event!(
+            target: RECLOSER_EVENT,
+            tracing::Level::INFO,
+            state,
+            started_ts
+        ),
+    }
+}
+
+/// Emit a state-exited tracing event, including `name` only when one is set.
+#[cfg(feature = "tracing")]
+fn emit_state_ended(name: Option<&str>, state: &'static str, ended_ts: u64, duration_sec: u64) {
+    match name {
+        Some(name) => tracing::event!(
+            target: RECLOSER_EVENT,
+            tracing::Level::INFO,
+            name,
+            state,
+            ended_ts,
+            duration_sec
+        ),
+        None => tracing::event!(
+            target: RECLOSER_EVENT,
+            tracing::Level::INFO,
+            state,
+            ended_ts,
+            duration_sec
+        ),
+    }
+}
+
 /// A concurrent cirbuit breaker based on `RingBuffer`s that allows or rejects
 /// calls depending on the state it is in.
 pub struct Recloser {
@@ -26,6 +70,8 @@ pub struct Recloser {
     open_wait: Duration,
     open_wait_strategy: Option<Box<dyn WaitStrategy>>,
     state: Atomic<State>,
+    #[cfg(feature = "tracing")]
+    name: Option<Cow<'static, str>>,
     #[cfg(feature = "tracing")]
     state_started_ts: AtomicU64,
 }
@@ -98,24 +144,7 @@ impl Recloser {
 
                     #[cfg(feature = "tracing")]
                     if _swapped.is_ok() {
-                        let swap_ts = SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_secs();
-                        let old_state_ts = self.state_started_ts.swap(swap_ts, Ordering::Relaxed);
-                        tracing::event!(
-                            target: RECLOSER_EVENT,
-                            tracing::Level::INFO,
-                            state = _old_state.name(),
-                            ended_ts = swap_ts,
-                            duration_sec = swap_ts - old_state_ts
-                        );
-                        tracing::event!(
-                            target: RECLOSER_EVENT,
-                            tracing::Level::INFO,
-                            state = new_state_name,
-                            started_ts = swap_ts
-                        );
+                        self.emit_transition(_old_state.name(), new_state_name);
                     }
 
                     true
@@ -204,25 +233,21 @@ impl Recloser {
 
         #[cfg(feature = "tracing")]
         if _swapped.is_ok() {
-            let swap_ts = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
-            let old_state_ts = self.state_started_ts.swap(swap_ts, Ordering::Relaxed);
-            tracing::event!(
-                target: RECLOSER_EVENT,
-                tracing::Level::INFO,
-                state = _old_state.name(),
-                ended_ts = swap_ts,
-                duration_sec = swap_ts - old_state_ts
-            );
-            tracing::event!(
-                target: RECLOSER_EVENT,
-                tracing::Level::INFO,
-                state = new_state_name,
-                started_ts = swap_ts
-            );
+            self.emit_transition(_old_state.name(), new_state_name);
         }
+    }
+
+    /// Emit the exit/enter tracing event pair for a state transition.
+    #[cfg(feature = "tracing")]
+    fn emit_transition(&self, old_state_name: &'static str, new_state_name: &'static str) {
+        let swap_ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let old_state_ts = self.state_started_ts.swap(swap_ts, Ordering::Relaxed);
+        let name = self.name.as_deref();
+        emit_state_ended(name, old_state_name, swap_ts, swap_ts - old_state_ts);
+        emit_state_started(name, new_state_name, swap_ts);
     }
 }
 
@@ -237,10 +262,16 @@ impl core::fmt::Debug for Recloser {
             open_wait_strategy,
             state,
             #[cfg(feature = "tracing")]
+            name,
+            #[cfg(feature = "tracing")]
             state_started_ts,
         } = self;
 
         let mut ds = f.debug_struct("Recloser");
+
+        #[cfg(feature = "tracing")]
+        ds.field("name", &name);
+
         ds.field("threshold_closed", &threshold_closed)
             .field("threshold_half_open", &threshold_half_open)
             .field("closed_len", &closed_len)
@@ -274,8 +305,8 @@ enum State {
     HalfOpen(RingBuffer, u32),
 }
 
-#[cfg(feature = "tracing")]
 impl State {
+    #[cfg(feature = "tracing")]
     fn name(&self) -> &'static str {
         match self {
             State::Closed(_) => "Closed",
@@ -293,6 +324,8 @@ pub struct RecloserBuilder {
     half_open_len: usize,
     open_wait: Duration,
     open_wait_strategy: Option<Box<dyn WaitStrategy>>,
+    #[cfg(feature = "tracing")]
+    name: Option<Cow<'static, str>>,
 }
 
 impl RecloserBuilder {
@@ -304,7 +337,20 @@ impl RecloserBuilder {
             half_open_len: 10,
             open_wait: Duration::from_secs(30),
             open_wait_strategy: None,
+            #[cfg(feature = "tracing")]
+            name: None,
         }
+    }
+
+    /// Set the name used to identify this circuit breaker in tracing events.
+    ///
+    /// Accepts both static strings (e.g. `"payments"`) and owned `String`s built
+    /// from runtime configuration. When unset, the `name` field is omitted from
+    /// the emitted events.
+    #[cfg(feature = "tracing")]
+    pub fn name(mut self, name: impl Into<Cow<'static, str>>) -> Self {
+        self.name = Some(name.into());
+        self
     }
 
     pub fn error_rate(mut self, threshold: f32) -> Self {
@@ -352,12 +398,7 @@ impl RecloserBuilder {
             .unwrap_or_default()
             .as_secs();
         #[cfg(feature = "tracing")]
-        tracing::event!(
-            target: RECLOSER_EVENT,
-            tracing::Level::INFO,
-            state = state.name(),
-            started_ts = state_started
-        );
+        emit_state_started(self.name.as_deref(), state.name(), state_started);
 
         Recloser {
             threshold_closed: self.threshold_closed,
@@ -367,6 +408,8 @@ impl RecloserBuilder {
             open_wait: self.open_wait,
             open_wait_strategy: self.open_wait_strategy,
             state: Atomic::new(state),
+            #[cfg(feature = "tracing")]
+            name: self.name,
             #[cfg(feature = "tracing")]
             state_started_ts: AtomicU64::new(state_started),
         }
@@ -388,9 +431,15 @@ impl core::fmt::Debug for RecloserBuilder {
             half_open_len,
             open_wait,
             open_wait_strategy,
+            #[cfg(feature = "tracing")]
+            name,
         } = self;
-        f.debug_struct("RecloserBuilder")
-            .field("threshold_closed", &threshold_closed)
+        let mut ds = f.debug_struct("RecloserBuilder");
+
+        #[cfg(feature = "tracing")]
+        ds.field("name", &name);
+
+        ds.field("threshold_closed", &threshold_closed)
             .field("threshold_half_open", &threshold_half_open)
             .field("closed_len", &closed_len)
             .field("half_open_len", &half_open_len)
@@ -677,5 +726,82 @@ mod tests {
         assert_eq!(strategy.next_wait(2, open_wait), Duration::from_secs(4));
         assert_eq!(strategy.next_wait(4, open_wait), Duration::from_secs(5));
         assert_eq!(strategy.next_wait(10, open_wait), Duration::from_secs(5));
+    }
+
+    #[cfg(feature = "tracing")]
+    #[test]
+    fn tracing_name_present_only_when_set() {
+        use std::sync::{Arc, Mutex};
+
+        use tracing::field::{Field, Visit};
+        use tracing::{Event, Subscriber};
+        use tracing_subscriber::{Layer, layer::Context, prelude::*};
+
+        /// Captured `(name, state)` per recloser event.
+        type Records = Vec<(Option<String>, Option<String>)>;
+
+        #[derive(Clone, Default)]
+        struct Captured(Arc<Mutex<Records>>);
+
+        impl<S: Subscriber> Layer<S> for Captured {
+            fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
+                if event.metadata().target() != RECLOSER_EVENT {
+                    return;
+                }
+                #[derive(Default)]
+                struct V {
+                    name: Option<String>,
+                    state: Option<String>,
+                }
+                impl Visit for V {
+                    fn record_str(&mut self, field: &Field, value: &str) {
+                        match field.name() {
+                            "name" => self.name = Some(value.to_owned()),
+                            "state" => self.state = Some(value.to_owned()),
+                            _ => {}
+                        }
+                    }
+                    fn record_debug(&mut self, _field: &Field, _value: &dyn std::fmt::Debug) {}
+                }
+                let mut v = V::default();
+                event.record(&mut v);
+                self.0.lock().unwrap().push((v.name, v.state));
+            }
+        }
+
+        // Named breaker: every event carries the name.
+        let cap = Captured::default();
+        tracing::subscriber::with_default(tracing_subscriber::registry().with(cap.clone()), || {
+            Recloser::custom().name("payments").build();
+        });
+        let events = cap.0.lock().unwrap();
+        assert!(!events.is_empty());
+        assert!(
+            events
+                .iter()
+                .all(|(name, _)| name.as_deref() == Some("payments"))
+        );
+
+        // Unnamed breaker: no name field is emitted.
+        let cap = Captured::default();
+        tracing::subscriber::with_default(tracing_subscriber::registry().with(cap.clone()), || {
+            Recloser::custom().build();
+        });
+        let events = cap.0.lock().unwrap();
+        assert!(!events.is_empty());
+        assert!(events.iter().all(|(name, _)| name.is_none()));
+
+        // Owned (runtime) name is accepted too.
+        let cap = Captured::default();
+        let runtime_name = String::from("inventory");
+        tracing::subscriber::with_default(tracing_subscriber::registry().with(cap.clone()), || {
+            Recloser::custom().name(runtime_name).build();
+        });
+        let events = cap.0.lock().unwrap();
+        assert!(
+            events
+                .iter()
+                .all(|(name, _)| name.as_deref() == Some("inventory"))
+        );
     }
 }
